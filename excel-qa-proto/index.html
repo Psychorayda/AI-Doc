@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数净 · Excel 数据校验与智能问数原型</title>
+<!-- SheetJS：Excel 解析/生成（唯一外部依赖；问数本身即需联网调 LLM） -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+/* ================= 设计契约 · Design Tokens ================= */
+:root{
+  --primary:#0d6e5f; --primary-hover:#0a5a4e; --primary-soft:#e3f1ee;
+  --bg:#f4f6f5; --surface:#ffffff; --border:#e2e7e5;
+  --text:#1f2a30; --text-sub:#647479;
+  --success:#15803d; --warning:#b45309; --danger:#b91c1c;
+  --mono:"SF Mono",Consolas,"Courier New",monospace;
+  --r-sm:6px; --r-md:10px; --r-lg:14px;
+  --sh-sm:0 1px 2px rgba(20,40,36,.05);
+  --sh-md:0 4px 14px rgba(20,40,36,.08);
+  --sh-lg:0 12px 34px rgba(20,40,36,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  background:var(--bg); color:var(--text); font-size:14px; line-height:1.55;
+  background-image:radial-gradient(circle at 85% -10%, rgba(13,110,95,.07), transparent 45%),
+                   radial-gradient(circle at -10% 110%, rgba(13,110,95,.05), transparent 40%);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+button{font-family:inherit;cursor:pointer}
+input,select{font-family:inherit}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#c7d0cd;border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ================= 顶栏 ================= */
+header{
+  height:56px; flex:none; display:flex; align-items:center; gap:12px; padding:0 20px;
+  background:var(--surface); border-bottom:1px solid var(--border); z-index:10;
+}
+.logo{width:30px;height:30px;border-radius:8px;background:var(--primary);display:grid;place-items:center;color:#fff;flex:none}
+header h1{font-size:16px;font-weight:600;letter-spacing:.02em}
+header .sub{font-size:12px;color:var(--text-sub);margin-left:2px}
+header .spacer{flex:1}
+.chip{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--primary-soft);color:var(--primary);border:1px solid #cfe4df;white-space:nowrap}
+.chip.warn{background:#fdf3e7;color:var(--warning);border-color:#f0ddc2}
+
+/* ================= 主布局 ================= */
+main{flex:1;display:grid;grid-template-columns:380px minmax(0,1fr) 400px;gap:14px;padding:14px;min-height:0}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--sh-sm);display:flex;flex-direction:column;min-height:0;overflow:hidden;animation:rise .45s ease both}
+.panel:nth-child(2){animation-delay:.06s}.panel:nth-child(3){animation-delay:.12s}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.panel-head{flex:none;display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px}
+.panel-head svg{color:var(--primary)}
+.panel-head .tag{margin-left:auto;font-size:11px;font-weight:500;color:var(--text-sub)}
+.panel-body{flex:1;overflow:auto;padding:14px 16px;min-height:0}
+
+/* ================= 按钮 ================= */
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);
+  padding:7px 13px;border-radius:var(--r-md);font-size:13px;transition:.15s;box-shadow:var(--sh-sm)}
+.btn:hover{border-color:#b9c6c2;transform:translateY(-1px)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:var(--primary-hover)}
+.btn.ghost{box-shadow:none}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn.sm{padding:4px 10px;font-size:12px;border-radius:var(--r-sm)}
+.btn.block{width:100%;justify-content:center}
+
+/* ================= 上传区 ================= */
+.drop{border:1.5px dashed #b9cdc8;border-radius:var(--r-md);padding:22px 14px;text-align:center;color:var(--text-sub);
+  transition:.2s;background:#fbfdfc;cursor:pointer}
+.drop:hover,.drop.over{border-color:var(--primary);background:var(--primary-soft);color:var(--primary)}
+.drop b{color:var(--text);font-weight:600}
+.drop .mini{font-size:11px;margin-top:4px}
+.or{display:flex;align-items:center;gap:10px;color:var(--text-sub);font-size:11px;margin:12px 0}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--border)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+/* ================= 统计卡 ================= */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
+.stat{background:#f8faf9;border:1px solid var(--border);border-radius:var(--r-md);padding:9px 8px;text-align:center}
+.stat b{display:block;font-family:var(--mono);font-size:17px;color:var(--primary)}
+.stat.warn b{color:var(--warning)}.stat.bad b{color:var(--danger)}
+.stat span{font-size:11px;color:var(--text-sub)}
+
+/* ================= 问题清单 ================= */
+.filters{display:flex;gap:6px;margin-bottom:10px}
+.f-chip{font-size:12px;padding:3px 11px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--text-sub);transition:.15s}
+.f-chip.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.issue{display:flex;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:6px;font-size:12px;background:#fff;align-items:flex-start}
+.issue .dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:5px}
+.issue.fixed .dot{background:var(--warning)}
+.issue.removed .dot{background:var(--danger)}
+.issue .what{flex:1;min-width:0}
+.issue .what code{font-family:var(--mono);font-size:11px;background:#f1f4f3;padding:1px 5px;border-radius:4px;color:#0a5a4e}
+.issue .act{flex:none;font-size:11px;color:var(--text-sub)}
+.empty{color:var(--text-sub);text-align:center;padding:34px 10px;font-size:13px}
+.empty svg{margin-bottom:8px;opacity:.5}
+
+/* ================= 表格 ================= */
+.table-wrap{flex:1;overflow:auto;min-height:0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+thead th{position:sticky;top:0;background:#f4f8f6;color:#33504a;font-weight:600;text-align:left;
+  padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;z-index:2;font-size:12px}
+tbody td{padding:8px 12px;border-bottom:1px solid #eef2f0;white-space:nowrap}
+tbody tr:hover{background:#f6faf8}
+td.num,th.num{text-align:right;font-family:var(--mono)}
+tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdfc;border-top:1px solid var(--border);position:sticky;bottom:0}
+
+/* ================= 对话区 ================= */
+.chat-hints{flex:none;padding:10px 14px;border-bottom:1px solid var(--border);background:#fbfdfc}
+.chat-hints .dir{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.hint{font-size:11px;padding:3px 9px;border-radius:999px;background:var(--primary-soft);color:var(--primary);border:none;transition:.15s}
+.hint:hover{background:#cfe7e1}
+.chat-log{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.msg{max-width:88%;padding:9px 13px;border-radius:12px;font-size:13px;white-space:pre-wrap;word-break:break-word;animation:rise .25s ease both}
+.msg.user{align-self:flex-end;background:var(--primary);color:#fff;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:#f1f5f3;border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.ai.err{background:#fdf2f2;border-color:#f3d3d3;color:var(--danger)}
+.msg .meta{display:block;font-size:10px;color:var(--text-sub);margin-top:5px}
+.typing{display:inline-flex;gap:4px;padding:4px 2px}
+.typing i{width:6px;height:6px;border-radius:50%;background:#9db5b0;animation:blink 1.2s infinite}
+.typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.chat-input{flex:none;display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface)}
+.chat-input input{flex:1;border:1px solid var(--border);border-radius:var(--r-md);padding:9px 12px;font-size:13px;outline:none;transition:.15s}
+.chat-input input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(13,110,95,.12)}
+
+/* ================= 设置弹窗 ================= */
+.modal-mask{position:fixed;inset:0;background:rgba(20,35,31,.42);display:none;place-items:center;z-index:50;backdrop-filter:blur(2px)}
+.modal-mask.show{display:grid}
+.modal{width:420px;max-width:92vw;background:#fff;border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:20px;animation:rise .25s ease both}
+.modal h3{font-size:15px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12px;color:var(--text-sub);margin-bottom:4px}
+.field input{width:100%;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 10px;font-size:13px;outline:none}
+.field input:focus{border-color:var(--primary)}
+.modal .foot{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.tip{font-size:11px;color:var(--text-sub);background:#f6f9f8;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 10px;margin-top:4px}
+
+/* ================= Toast ================= */
+#toasts{position:fixed;top:66px;right:16px;z-index:99;display:flex;flex-direction:column;gap:8px}
+.toast{background:#22312d;color:#fff;font-size:13px;padding:9px 15px;border-radius:var(--r-md);box-shadow:var(--sh-md);animation:rise .25s ease both;max-width:340px}
+.toast.err{background:var(--danger)}
+.toast.ok{background:var(--primary)}
+
+@media (max-width:1180px){main{grid-template-columns:1fr;overflow:auto}body{overflow:auto}.panel{max-height:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>
+  </div>
+  <h1>数净 DataClean QA</h1>
+  <span class="sub">Excel 校验修复 · 自然语言问数 · 功能原型</span>
+  <div class="spacer"></div>
+  <span class="chip warn" id="llmChip">未配置 API Key · 本地规则引擎兜底</span>
+  <button class="btn sm" id="btnSettings">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    模型设置
+  </button>
+</header>
+
+<main>
+  <!-- ========== 左栏：数据管线 ========== -->
+  <section class="panel">
+    <div class="panel-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      数据接入与校验 <span class="tag">模块 ①</span>
+    </div>
+    <div class="panel-body">
+      <div class="drop" id="drop">
+        <b>点击或拖拽上传 Excel</b>
+        <div class="mini">支持 .xlsx / .xls / .csv · 需含表头：日期/门店/品类/单价/数量/销售额</div>
+        <input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>
+      </div>
+      <div class="or">没有数据？用内置模拟数据</div>
+      <div class="row2">
+        <button class="btn primary" id="btnMockLoad">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          一键加载模拟数据
+        </button>
+        <button class="btn" id="btnMockDl">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下载模拟 Excel
+        </button>
+      </div>
+
+      <div class="stats" id="stats" style="display:none">
+        <div class="stat"><b id="stRaw">0</b><span>原始行</span></div>
+        <div class="stat warn"><b id="stFixed">0</b><span>已修正</span></div>
+        <div class="stat bad"><b id="stRemoved">0</b><span>已剔除</span></div>
+        <div class="stat"><b id="stClean">0</b><span>保留行</span></div>
+      </div>
+
+      <div id="issueZone" style="display:none">
+        <div class="filters">
+          <button class="f-chip on" data-f="all">全部</button>
+          <button class="f-chip" data-f="fixed">已修正</button>
+          <button class="f-chip" data-f="removed">已剔除</button>
+        </div>
+        <div id="issues"></div>
+      </div>
+      <div class="empty" id="issueEmpty">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        上传或加载数据后，这里展示校验报告<br>（空值 / 超范围 / 单位错误 / 符号错误 / 数值转文字等）
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 中栏：清洗后表单 ========== -->
+  <section class="panel">
+    <div class="panel-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+      修复后数据表单 <span class="tag" id="tblTag">模块 ②</span>
+    </div>
+    <div class="table-wrap" id="tableWrap">
+      <div class="empty" style="padding-top:90px">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        暂无数据 · 请先上传 Excel 或加载模拟数据
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 右栏：自然语言问数 ========== -->
+  <section class="panel">
+    <div class="panel-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      智能问数 <span class="tag">模块 ③</span>
+    </div>
+    <div class="chat-hints">
+      <div style="font-size:12px;color:var(--text-sub)">问数方向提示：汇总统计 · 排行最值 · 分组对比 · 均值占比 · 趋势（按月）</div>
+      <div class="dir" id="hintDir">
+        <button class="hint">2026年7月总销售额是多少？</button>
+        <button class="hint">哪个门店销售额最高？</button>
+        <button class="hint">各品类销量分别是多少？</button>
+        <button class="hint">8月平均每件单价多少？</button>
+        <button class="hint">销售额前三的门店</button>
+      </div>
+    </div>
+    <div class="chat-log" id="chatLog">
+      <div class="msg ai">你好，我是问数助手。数据加载后即可提问，例如「各门店销售额对比」。支持多轮追问，如「那 8 月呢」。</div>
+    </div>
+    <div class="chat-input">
+      <input id="q" placeholder="输入你的问题，回车发送…" autocomplete="off">
+      <button class="btn primary" id="btnAsk">发送</button>
+    </div>
+  </section>
+</main>
+
+<!-- ========== 模型设置弹窗 ========== -->
+<div class="modal-mask" id="mask">
+  <div class="modal">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+      大模型设置（OpenAI 兼容接口）
+    </h3>
+    <div class="field"><label>Base URL</label><input id="cfgUrl" placeholder="https://api.deepseek.com/v1"></div>
+    <div class="field"><label>API Key</label><input id="cfgKey" type="password" placeholder="sk-..."></div>
+    <div class="field"><label>模型</label><input id="cfgModel" placeholder="deepseek-chat"></div>
+    <div class="tip">降本设计：仅向模型发送「字段 schema + 问题」与「查询结果摘要」，不上传全量数据；回答生成限制 max_tokens。未配置 Key 或调用失败时自动切换本地规则引擎，保证问数必有响应。</div>
+    <div class="foot">
+      <button class="btn ghost sm" id="btnTest">测试连接</button>
+      <button class="btn primary sm" id="btnSaveCfg">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * 模块 0 · 全局状态 Store（可复用：单一数据源 + 订阅渲染）
+ * =================================================================== */
+const Store = {
+  rawRows: [],        // 原始行
+  cleanRows: [],      // 修复后行（问数只查这里）
+  issues: [],         // {rowId, field, rule, before, after, action:'fixed'|'removed'}
+  issueFilter: 'all',
+  chat: [],           // 多轮记忆 {role, content}
+  enumCache: null     // 供 LLM 抽参的枚举值（门店/品类）
+};
+
+/* =====================================================================
+ * 模块 1 · MockData —— 生成含典型错误的模拟销售数据
+ * 数据主题：连锁餐饮门店 2026-06 ~ 2026-08 销售流水
+ * =================================================================== */
+const MockData = (() => {
+  const STORES = ['华东旗舰店','华北中心店','华南天河店','西南锦江店'];
+  const CATS = [['现制饮品',12,28],['烘焙点心',8,38],['轻食简餐',25,58],['周边零售',49,129]];
+  const rnd = (a,b)=>a+Math.random()*(b-a);
+  const pick = a=>a[Math.floor(Math.random()*a.length)];
+  const pad = n=>String(n).padStart(2,'0');
+
+  function generate(){
+    const rows = [];
+    let id = 1;
+    // ---- 正常数据 ~110 行 ----
+    for(let i=0;i<110;i++){
+      const [cat,pmin,pmax] = pick(CATS);
+      const price = Math.round(rnd(pmin,pmax)*2)/2;
+      const qty = Math.round(rnd(1,18));
+      const m = pick([6,7,8]), dMax = m===8?18:30;
+      const date = `2026-${pad(m)}-${pad(Math.ceil(rnd(0,dMax)))}`;
+      rows.push({ id:id++, date, store:pick(STORES), category:cat, price, qty, amount:Math.round(price*qty*100)/100 });
+    }
+    // ---- 注入错误（覆盖 5 类校验规则） ----
+    const bad = [
+      {store:'', note:'门店空值'},                                  // 空值-关键字段→剔除
+      {qty:'', note:'数量空值'},                                    // 空值→剔除
+      {amount:'', note:'销售额空值(可重算)'},                       // 空值→重算修复
+      {qty:-3, note:'数量超范围(负)'},                              // 超范围→剔除
+      {qty:99999, note:'数量超范围(极大)'},                         // 超范围→剔除
+      {price:0, note:'单价超范围(0)'},                              // 超范围→剔除
+      {price:'２５．５', note:'全角符号'},                          // 符号错误→修复
+      {price:'¥32.5', note:'货币符号'},                             // 符号错误→修复
+      {qty:'6件', note:'单位混入'},                                 // 单位错误→修复
+      {amount:'1,280', note:'千分位符号'},                          // 符号错误→修复
+      {price:'45.0', note:'数值转文字'},                            // 类型→修复
+      {qty:'十五', note:'中文数字'},                                // 数值转文字→修复
+      {date:'2026/7/15', note:'日期格式'},                          // 格式→修复
+      {amountFix:3.7, note:'销售额与单价×数量不一致'},              // 一致性→重算修复
+    ];
+    bad.forEach(b=>{
+      const [cat,pmin,pmax] = pick(CATS);
+      const r = { id:id++, date:`2026-${pad(pick([6,7,8]))}-${pad(Math.ceil(rnd(0,28)))}`,
+        store:pick(STORES), category:cat,
+        price:Math.round(rnd(pmin,pmax)*2)/2, qty:Math.round(rnd(1,15)) };
+      r.amount = Math.round((Number(r.price)||20)*(Number(r.qty)||5)*100)/100;
+      Object.assign(r, b);
+      if(b.amountFix) r.amount = Math.round(r.amount*b.amountFix*100)/100;
+      if(b.amount==='') r.amount='';
+      rows.push(r);
+    });
+    return rows;
+  }
+  return { generate, STORES, CATS:CATS.map(c=>c[0]) };
+})();
+
+/* =====================================================================
+ * 模块 2 · Validator —— 规则化校验与修复（每条规则独立可插拔）
+ * 规则覆盖：空值 / 超范围 / 单位错误 / 符号错误 / 数值转文字 / 一致性
+ * =================================================================== */
+const Validator = (() => {
+  const CN = {'零':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+  const cn2num = s => {                       // 中文数字 → 阿拉伯（≤999）
+    if(!/^[零一二两三四五六七八九十百]+$/.test(s)) return NaN;
+    let sec=0,num=0;
+    for(const ch of s){
+      if(CN[ch]!=null) num=CN[ch];
+      else if(ch==='十'){ sec+=(num||1)*10; num=0; }
+      else if(ch==='百'){ sec+=num*100; num=0; }
+    }
+    return sec+num;
+  };
+  const full2half = s => s.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/．/g,'.');
+
+  /* 数值字段流水线：符号→单位→中文数字→类型转换，逐级记录 */
+  function cleanNumber(v, field, rowId, issues){
+    if(v==null || String(v).trim()==='') return {val:null, empty:true};
+    let s = String(v).trim(), changed=[];
+    const half = full2half(s);
+    if(half!==s){ changed.push('全角转半角'); s=half; }
+    const stripped = s.replace(/[¥￥,，\s]/g,'').replace(/(元|件|个|笔)$/,'');
+    if(stripped!==s){ changed.push('去除单位/货币/千分位符号'); s=stripped; }
+    let n = parseFloat(s);
+    if(isNaN(n)){
+      const cn = cn2num(s);
+      if(!isNaN(cn)){ changed.push('中文数字转数值'); n=cn; }
+    }
+    if(isNaN(n)) return {val:null, empty:true};
+    if(typeof v==='string' && String(n)!==v && !changed.length) changed.push('数值型文字转数值');
+    if(changed.length) issues.push({rowId, field, rule:changed.join('；'), before:v, after:n, action:'fixed'});
+    return {val:n};
+  }
+
+  const RANGE = { price:[0.01,1000], qty:[1,500], amount:[0.01,1e7] };
+
+  function run(raw){
+    const issues=[], clean=[];
+    raw.forEach(row=>{
+      let drop=false;
+      const r = { id:row.id };
+      // 日期：格式归一
+      let d = String(row.date??'').trim().replace(/[/.]/g,'-');
+      const m = d.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if(m){ const nd=`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+        if(nd!==d) issues.push({rowId:row.id, field:'date', rule:'日期格式归一', before:row.date, after:nd, action:'fixed'});
+        r.date=nd;
+      } else { issues.push({rowId:row.id, field:'date', rule:'日期无法解析', before:row.date, after:'—', action:'removed'}); drop=true; }
+      // 门店：空值剔除
+      r.store = String(row.store??'').trim();
+      if(!r.store){ issues.push({rowId:row.id, field:'store', rule:'关键字段空值', before:'(空)', after:'—', action:'removed'}); drop=true; }
+      // 品类：空值填充"未分类"
+      r.category = String(row.category??'').trim();
+      if(!r.category){ r.category='未分类'; issues.push({rowId:row.id, field:'category', rule:'空值填充默认', before:'(空)', after:'未分类', action:'fixed'}); }
+      // 数值字段
+      ['price','qty','amount'].forEach(f=>{
+        const {val, empty} = cleanNumber(row[f], f, row.id, issues);
+        r[f]=val;
+        if(empty){
+          if(f==='amount'){ r[f]=null; }  // 销售额稍后重算
+          else { issues.push({rowId:row.id, field:f, rule:'关键字段空值', before:'(空)', after:'—', action:'removed'}); drop=true; }
+        } else if(val<RANGE[f][0] || val>RANGE[f][1]){
+          issues.push({rowId:row.id, field:f, rule:`超范围 [${RANGE[f]}]`, before:val, after:'—', action:'removed'}); drop=true;
+        }
+      });
+      if(drop) return;
+      // 一致性：amount = price × qty
+      const expect = Math.round(r.price*r.qty*100)/100;
+      if(r.amount==null || Math.abs(r.amount-expect)>0.01){
+        issues.push({rowId:row.id, field:'amount', rule:'销售额≠单价×数量，已重算', before:r.amount??'(空)', after:expect, action:'fixed'});
+        r.amount = expect;
+      }
+      clean.push(r);
+    });
+    return { clean, issues };
+  }
+  return { run };
+})();
+
+/* =====================================================================
+ * 模块 3 · ExcelIO —— Excel 解析 / 模拟文件生成（依赖 SheetJS）
+ * =================================================================== */
+const ExcelIO = (() => {
+  const HEAD = { '日期':'date', '门店':'store', '品类':'category', '单价':'price', '数量':'qty', '销售额':'amount' };
+  function parse(file){
+    return new Promise((resolve,reject)=>{
+      if(typeof XLSX==='undefined') return reject(new Error('SheetJS 未加载（需联网）'));
+      const rd = new FileReader();
+      rd.onload = e=>{
+        try{
+          const wb = XLSX.read(e.target.result,{type:'array'});
+          const arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
+          if(!arr.length) throw new Error('文件为空');
+          const headRow = arr[0].map(h=>String(h).trim());
+          const map = headRow.map(h=>HEAD[h]||null);
+          if(map.every(x=>!x)) throw new Error('未识别表头，需包含：日期/门店/品类/单价/数量/销售额');
+          const rows = arr.slice(1).filter(r=>r.some(c=>String(c).trim()!==''))
+            .map((r,i)=>{ const o={id:i+1}; map.forEach((k,j)=>{ if(k) o[k]=r[j]; }); return o; });
+          resolve(rows);
+        }catch(err){ reject(err); }
+      };
+      rd.onerror = ()=>reject(new Error('文件读取失败'));
+      rd.readAsArrayBuffer(file);
+    });
+  }
+  function downloadMock(rows){
+    if(typeof XLSX==='undefined'){ UI.toast('SheetJS 未加载，无法生成文件','err'); return; }
+    const data = rows.map(r=>({ '日期':r.date,'门店':r.store,'品类':r.category,'单价':r.price,'数量':r.qty,'销售额':r.amount }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'销售流水');
+    XLSX.writeFile(wb,'模拟销售数据_含错误.xlsx');
+  }
+  return { parse, downloadMock };
+})();
+
+/* =====================================================================
+ * 模块 4 · QueryEngine —— 本地结构化查询（问数的执行层，零成本）
+ * =================================================================== */
+const QueryEngine = (() => {
+  const METRIC_NAME = { amount:'销售额', qty:'销量', price:'单价' };
+  const AGG_NAME = { sum:'总', avg:'平均', max:'最高', min:'最低', count:'记录数' };
+  const GROUP_NAME = { store:'门店', category:'品类', month:'月份' };
+
+  function aggregate(rows, metric, agg){
+    if(agg==='count') return rows.length;
+    const vals = rows.map(r=>r[metric]).filter(v=>typeof v==='number');
+    if(!vals.length) return 0;
+    if(agg==='sum') return vals.reduce((a,b)=>a+b,0);
+    if(agg==='avg') return vals.reduce((a,b)=>a+b,0)/vals.length;
+    if(agg==='max') return Math.max(...vals);
+    if(agg==='min') return Math.min(...vals);
+    return 0;
+  }
+  const round = v => Math.round(v*100)/100;
+
+  /* spec: {metric, agg, groupBy, filters:{store,category,month}, topN} */
+  function run(spec, rows){
+    let r = rows.slice();
+    const f = spec.filters||{};
+    if(f.store)   r = r.filter(x=>x.store.includes(f.store));
+    if(f.category)r = r.filter(x=>x.category.includes(f.category));
+    if(f.month)   r = r.filter(x=>x.date.startsWith(f.month));
+    const metric = spec.metric||'amount', agg = spec.agg||'sum';
+    if(spec.groupBy){
+      const g = {};
+      r.forEach(row=>{ const k = spec.groupBy==='month' ? row.date.slice(0,7) : row[spec.groupBy]; (g[k]=g[k]||[]).push(row); });
+      let out = Object.entries(g).map(([k,list])=>({key:k, value:round(aggregate(list,metric,agg)), n:list.length}));
+      out.sort((a,b)=> spec.order==='asc' ? a.value-b.value : b.value-a.value);
+      if(spec.topN) out = out.slice(0,spec.topN);
+      return { type:'group', groupBy:spec.groupBy, metric, agg, rows:out, matched:r.length };
+    }
+    return { type:'scalar', metric, agg, value:round(aggregate(r,metric,agg)), matched:r.length };
+  }
+  /* 本地模板化回答（LLM 不可用时的兜底输出） */
+  function renderLocal(spec, res){
+    const mName = METRIC_NAME[res.metric], aName = AGG_NAME[res.agg]||'';
+    const f = spec.filters||{};
+    const scope = [f.month, f.store, f.category].filter(Boolean).join('·') || '全部数据';
+    if(res.matched===0) return `在「${scope}」范围内没有匹配的数据记录。`;
+    if(res.type==='scalar'){
+      return res.agg==='count'
+        ? `${scope}共有 ${res.value} 条记录。`
+        : `${scope}的${aName}${mName}为 ${res.value.toLocaleString()}${res.metric==='qty'?' 件':res.metric==='amount'?' 元':''}（基于 ${res.matched} 条记录）。`;
+    }
+    const unit = res.metric==='qty'?' 件':res.metric==='amount'?' 元':'';
+    const lines = res.rows.map((x,i)=>`${i+1}. ${x.key}：${x.value.toLocaleString()}${unit}（${x.n}条）`);
+    return `按${GROUP_NAME[res.groupBy]}统计的${aName}${mName}（${scope}）：\n${lines.join('\n')}`;
+  }
+  return { run, renderLocal };
+})();
+
+/* =====================================================================
+ * 模块 5 · NLU —— 问数意图解析
+ *  A. LLM 抽参（主，低成本：prompt 仅含 schema+枚举，不含数据）
+ *  B. 规则引擎（兜底，保证永不无响应）
+ * =================================================================== */
+const NLU = (() => {
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null"}`;
+
+  function buildExtractPrompt(q, lastQ, enums){
+    return [
+      { role:'system', content:
+`你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
+门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}。
+把问题转成 JSON，结构：${SPEC_HINT}。规则：默认 metric=amount, agg=sum；"各/每/分别"→设置 groupBy；"最高/最低/前几"→排序取 topN；无法确定的字段填 null。只输出 JSON，不要解释。` },
+      ...(lastQ ? [{ role:'user', content:`上一轮问题：${lastQ}\n当前问题（可能省略了条件，请结合上一轮补全）：${q}` }] : [{ role:'user', content:q }])
+    ];
+  }
+  function parseSpecJSON(text){
+    const m = text.match(/\{[\s\S]*\}/);
+    if(!m) throw new Error('LLM 未返回 JSON');
+    const s = JSON.parse(m[0]);
+    return { metric:s.metric||'amount', agg:s.agg||'sum',
+      groupBy:['store','category','month'].includes(s.groupBy)?s.groupBy:null,
+      filters:s.filters||{}, topN:(+s.topN>0?Math.min(+s.topN,20):null),
+      order:(s.order==='asc'?'asc':undefined) };
+  }
+
+  /* —— 规则兜底解析器 —— */
+  function ruleParse(q, enums){
+    const spec = { metric:'amount', agg:'sum', groupBy:null, filters:{}, topN:null };
+    if(/销量|数量|多少件|几件/.test(q)) spec.metric='qty';
+    else if(/单价|均价|价格/.test(q)) spec.metric='price';
+    if(/平均|均值/.test(q)) spec.agg='avg';
+    else if(/最高|最大|最多|第一|最厉害/.test(q)){ spec.agg='sum'; spec.topN=spec.topN||1; }
+    else if(/最低|最少/.test(q)){ spec.agg='sum'; spec.order='asc'; }
+    if(/多少条|几笔|几条|记录数/.test(q)) spec.agg='count';
+    if(/各门店|每个门店|按门店|门店.*对比|哪个门店/.test(q)) spec.groupBy='store';
+    else if(/各品类|每个品类|按品类|品类.*对比|哪类/.test(q)) spec.groupBy='category';
+    else if(/各月|每月|按月|月度|趋势/.test(q)) spec.groupBy='month';
+    const top = q.match(/前\s*([三3二2五5十10]|\d+)\s*(个|名|家)?/) || q.match(/([三3二2五5十10]|\d+)\s*(个|名|家)\s*(门店|品类)/);
+    if(top) spec.topN = {'三':3,'二':2,'五':5,'十':10}[top[1]]||parseInt(top[1]);
+    if(!spec.groupBy && /(最高|最低|最多|最少|前)/.test(q)){
+      if(q.includes('品类')) spec.groupBy='category';
+      else if(q.includes('门店')) spec.groupBy='store';
+    }
+    enums.stores.forEach(s=>{ if(q.includes(s)||q.includes(s.slice(0,2))) spec.filters.store=s; });
+    enums.cats.forEach(c=>{ if(q.includes(c)||q.includes(c.replace(/^现制|^轻食|^周边/,''))) spec.filters.category=c; });
+    const ym = q.match(/(20\d{2})\s*年?\s*(\d{1,2})\s*月/);
+    if(ym) spec.filters.month = `${ym[1]}-${ym[2].padStart(2,'0')}`;
+    else { const mm = q.match(/(\d{1,2})\s*月/); if(mm) spec.filters.month = `2026-${mm[1].padStart(2,'0')}`; }
+    if(/最高|最低/.test(q) && !spec.groupBy){ spec.groupBy='store'; spec.topN=spec.topN||1; }
+    return spec;
+  }
+  return { buildExtractPrompt, parseSpecJSON, ruleParse };
+})();
+
+/* =====================================================================
+ * 模块 6 · LLMClient —— OpenAI 兼容调用（超时控制 + 低成本参数）
+ * =================================================================== */
+const LLMClient = (() => {
+  const DEFAULT = { url:'https://api.deepseek.com/v1', key:'', model:'deepseek-chat' };
+  function cfg(){
+    try{ return Object.assign({}, DEFAULT, JSON.parse(localStorage.getItem('qa_cfg')||'{}')); }
+    catch(e){ return {...DEFAULT}; }
+  }
+  function save(c){ localStorage.setItem('qa_cfg', JSON.stringify(c)); }
+  function ready(){ return !!cfg().key; }
+
+  async function chat(messages, {maxTokens=300, timeout=15000}={}){
+    const c = cfg();
+    if(!c.key) throw new Error('NO_KEY');
+    const ctl = new AbortController();
+    const timer = setTimeout(()=>ctl.abort(), timeout);
+    try{
+      const res = await fetch(c.url.replace(/\/+$/,'')+'/chat/completions', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+c.key },
+        body: JSON.stringify({ model:c.model, messages, temperature:0.1, max_tokens:maxTokens, stream:false }),
+        signal: ctl.signal
+      });
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const data = await res.json();
+      const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if(!text) throw new Error('空响应');
+      return text.trim();
+    } finally { clearTimeout(timer); }
+  }
+  return { chat, cfg, save, ready };
+})();
+
+/* =====================================================================
+ * 模块 7 · Chat —— 多轮对话编排：抽参→本地查询→组织回答（全程有反馈）
+ * =================================================================== */
+const Chat = (() => {
+  let lastUserQ = null;
+
+  async function ask(q){
+    if(!Store.cleanRows.length){
+      UI.addMsg('ai','请先在左侧上传 Excel 或点击「一键加载模拟数据」，我才能基于数据回答。', true);
+      return;
+    }
+    UI.addMsg('user', q);
+    const thinking = UI.addThinking();
+    const t0 = performance.now();
+    const enums = Store.enumCache;
+    let spec, engine = '大模型';
+
+    /* ① 抽参：LLM 优先，失败回退规则引擎 */
+    try{
+      if(!LLMClient.ready()) throw new Error('NO_KEY');
+      const raw = await LLMClient.chat(NLU.buildExtractPrompt(q, lastUserQ, enums), {maxTokens:200});
+      spec = NLU.parseSpecJSON(raw);
+    }catch(e){
+      spec = NLU.ruleParse(q, enums);
+      engine = '本地规则引擎';
+    }
+
+    /* ② 本地查询 */
+    let res;
+    try{ res = QueryEngine.run(spec, Store.cleanRows); }
+    catch(e){
+      thinking.remove();
+      UI.addMsg('ai','查询执行出错：'+e.message+'。请换个问法试试。', true);
+      return;
+    }
+
+    /* ③ 组织回答：LLM 优先，失败用本地模板 */
+    let answer;
+    if(engine==='大模型'){
+      try{
+        const brief = JSON.stringify(res).slice(0, 1200);
+        const mem = Store.chat.slice(-4);
+        answer = await LLMClient.chat([
+          { role:'system', content:'你是数据分析助手。根据给定查询结果，用简体中文简洁回答（≤100字），列出关键数字，不要编造结果之外的数据。' },
+          ...mem,
+          { role:'user', content:`问题：${q}\n查询结果(JSON)：${brief}` }
+        ], {maxTokens:220});
+      }catch(e){ engine='本地模板'; answer = QueryEngine.renderLocal(spec, res); }
+    } else {
+      answer = QueryEngine.renderLocal(spec, res);
+    }
+
+    thinking.remove();
+    const ms = Math.round(performance.now()-t0);
+    UI.addMsg('ai', answer, false, `引擎：${engine} · 命中 ${res.matched} 条 · ${ms}ms`);
+    lastUserQ = q;
+    Store.chat.push({role:'user', content:q}, {role:'assistant', content:answer});
+    if(Store.chat.length>12) Store.chat = Store.chat.slice(-12);  // 控制记忆长度=控制成本
+  }
+  return { ask };
+})();
+
+/* =====================================================================
+ * 模块 8 · UI —— 渲染与事件（表格 / 校验报告 / 对话 / 设置 / Toast）
+ * =================================================================== */
+const UI = (() => {
+  const $ = id => document.getElementById(id);
+
+  function toast(msg, type=''){ 
+    const t = document.createElement('div');
+    t.className = 'toast '+type; t.textContent = msg;
+    $('toasts').appendChild(t);
+    setTimeout(()=>{ t.style.opacity='0'; t.style.transition='.3s'; setTimeout(()=>t.remove(),300); }, 3200);
+  }
+
+  /* ---- 校验报告 ---- */
+  function renderIssues(){
+    const z = $('issueZone'), list = $('issues');
+    if(!Store.issues.length){ z.style.display='none'; $('issueEmpty').style.display='block'; return; }
+    z.style.display='block'; $('issueEmpty').style.display='none';
+    const f = Store.issueFilter;
+    const show = Store.issues.filter(i=>f==='all'||i.action===f);
+    list.innerHTML = show.map(i=>`
+      <div class="issue ${i.action}">
+        <span class="dot"></span>
+        <div class="what">#${i.rowId} <code>${i.field}</code> ${i.rule}<br>
+          <span style="color:var(--text-sub)">${String(i.before)} → ${String(i.after)}</span></div>
+        <span class="act">${i.action==='fixed'?'已修正':'已剔除'}</span>
+      </div>`).join('') || '<div class="empty">该分类下无记录</div>';
+  }
+
+  /* ---- 数据表 ---- */
+  function renderTable(){
+    const w = $('tableWrap');
+    if(!Store.cleanRows.length){ return; }
+    const rows = Store.cleanRows.slice(0,200);
+    w.innerHTML = `<table>
+      <thead><tr><th>#</th><th>日期</th><th>门店</th><th>品类</th>
+        <th class="num">单价(元)</th><th class="num">数量(件)</th><th class="num">销售额(元)</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr>
+        <td style="color:var(--text-sub)">${r.id}</td><td class="num">${r.date}</td>
+        <td>${r.store}</td><td>${r.category}</td>
+        <td class="num">${r.price.toFixed(1)}</td><td class="num">${r.qty}</td>
+        <td class="num">${r.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="7">共 ${Store.cleanRows.length} 行${Store.cleanRows.length>200?'（预览前 200 行）':''} · 问数基于全量清洗后数据</td></tr></tfoot>
+    </table>`;
+    $('tblTag').textContent = `模块 ② · ${Store.cleanRows.length} 行`;
+  }
+
+  function renderStats(){
+    $('stats').style.display = 'grid';
+    $('stRaw').textContent = Store.rawRows.length;
+    $('stFixed').textContent = Store.issues.filter(i=>i.action==='fixed').length;
+    $('stRemoved').textContent = Store.issues.filter(i=>i.action==='removed').length;
+    $('stClean').textContent = Store.cleanRows.length;
+  }
+
+  /* ---- 对话 ---- */
+  function addMsg(role, text, isErr=false, meta=''){
+    const d = document.createElement('div');
+    d.className = 'msg '+role+(isErr?' err':'');
+    d.textContent = text;
+    if(meta){ const m=document.createElement('span'); m.className='meta'; m.textContent=meta; d.appendChild(m); }
+    $('chatLog').appendChild(d);
+    $('chatLog').scrollTop = 1e9;
+    return d;
+  }
+  function addThinking(){
+    const d = document.createElement('div');
+    d.className = 'msg ai';
+    d.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+    $('chatLog').appendChild(d);
+    $('chatLog').scrollTop = 1e9;
+    return d;
+  }
+
+  /* ---- 数据装载主流程 ---- */
+  async function loadRows(raw, sourceName){
+    Store.rawRows = raw;
+    const { clean, issues } = Validator.run(raw);
+    Store.cleanRows = clean;
+    Store.issues = issues;
+    Store.enumCache = {
+      stores: [...new Set(clean.map(r=>r.store))],
+      cats:   [...new Set(clean.map(r=>r.category))]
+    };
+    renderStats(); renderIssues(); renderTable();
+    toast(`${sourceName}：${raw.length} 行 → 修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行`, 'ok');
+  }
+
+  /* ---- 事件绑定 ---- */
+  function bind(){
+    const drop = $('drop'), file = $('file');
+    drop.onclick = ()=>file.click();
+    drop.ondragover = e=>{ e.preventDefault(); drop.classList.add('over'); };
+    drop.ondragleave = ()=>drop.classList.remove('over');
+    drop.ondrop = e=>{ e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); };
+    file.onchange = ()=>{ if(file.files[0]) handleFile(file.files[0]); file.value=''; };
+
+    async function handleFile(f){
+      try{ const rows = await ExcelIO.parse(f); loadRows(rows, f.name); }
+      catch(e){ toast('解析失败：'+e.message, 'err'); }
+    }
+
+    $('btnMockLoad').onclick = ()=>loadRows(MockData.generate(), '模拟数据');
+    $('btnMockDl').onclick = ()=>ExcelIO.downloadMock(MockData.generate());
+
+    document.querySelectorAll('.f-chip').forEach(b=>b.onclick = ()=>{
+      document.querySelectorAll('.f-chip').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); Store.issueFilter = b.dataset.f; renderIssues();
+    });
+
+    document.querySelectorAll('.hint').forEach(b=>b.onclick = ()=>{ $('q').value=b.textContent; Chat.ask(b.textContent); });
+
+    const send = ()=>{ const v=$('q').value.trim(); if(!v) return; $('q').value=''; Chat.ask(v); };
+    $('btnAsk').onclick = send;
+    $('q').addEventListener('keydown', e=>{ if(e.key==='Enter') send(); });
+
+    /* 设置弹窗 */
+    $('btnSettings').onclick = ()=>{
+      const c = LLMClient.cfg();
+      $('cfgUrl').value=c.url; $('cfgKey').value=c.key; $('cfgModel').value=c.model;
+      $('mask').classList.add('show');
+    };
+    $('mask').onclick = e=>{ if(e.target===$('mask')) $('mask').classList.remove('show'); };
+    $('btnSaveCfg').onclick = ()=>{
+      LLMClient.save({ url:$('cfgUrl').value.trim()||'https://api.deepseek.com/v1', key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim()||'deepseek-chat' });
+      $('mask').classList.remove('show');
+      refreshChip(); toast('设置已保存','ok');
+    };
+    $('btnTest').onclick = async ()=>{
+      LLMClient.save({ url:$('cfgUrl').value.trim(), key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim() });
+      try{ await LLMClient.chat([{role:'user',content:'ping，回复pong'}],{maxTokens:10,timeout:10000}); toast('连接成功','ok'); }
+      catch(e){ toast('连接失败：'+e.message,'err'); }
+      refreshChip();
+    };
+    function refreshChip(){
+      const ok = LLMClient.ready();
+      $('llmChip').textContent = ok ? `已接入 ${LLMClient.cfg().model}` : '未配置 API Key · 本地规则引擎兜底';
+      $('llmChip').className = 'chip'+(ok?'':' warn');
+    }
+    refreshChip();
+  }
+  return { bind, toast, addMsg, addThinking };
+})();
+
+UI.bind();
+</script>
+</body>
+</html>
