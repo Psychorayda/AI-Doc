@@ -531,25 +531,47 @@ const QueryEngine = (() => {
  *  B. 规则引擎（兜底，保证永不无响应）
  * =================================================================== */
 const NLU = (() => {
-  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null"}`;
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null","order":"desc|asc"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
     return [
       { role:'system', content:
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
-门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}。
-把问题转成 JSON，结构：${SPEC_HINT}。规则：默认 metric=amount, agg=sum；"各/每/分别"→设置 groupBy；"最高/最低/前几"→排序取 topN；无法确定的字段填 null。只输出 JSON，不要解释。` },
+门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
+把问题转成 JSON，结构：${SPEC_HINT}。
+规则：默认 metric=amount, agg=sum, order=desc；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；无法确定的字段填 null。只输出 JSON。
+示例：
+问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc"}
+问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc"}
+问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc"}
+问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc"}
+问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}"},"topN":null,"order":"desc"}` },
       ...(lastQ ? [{ role:'user', content:`上一轮问题：${lastQ}\n当前问题（可能省略了条件，请结合上一轮补全）：${q}` }] : [{ role:'user', content:q }])
     ];
   }
   function parseSpecJSON(text){
     const m = text.match(/\{[\s\S]*\}/);
     if(!m) throw new Error('LLM 未返回 JSON');
-    const s = JSON.parse(m[0]);
-    return { metric:s.metric||'amount', agg:s.agg||'sum',
-      groupBy:['store','category','month'].includes(s.groupBy)?s.groupBy:null,
-      filters:s.filters||{}, topN:(+s.topN>0?Math.min(+s.topN,20):null),
-      order:(s.order==='asc'?'asc':undefined) };
+    return JSON.parse(m[0]);
+  }
+
+  /* —— spec 消毒器：白名单字段 + 枚举模糊归位 + 默认值，防止脏 spec 查成 0 条 —— */
+  function sanitizeSpec(s, enums){
+    const spec = { metric:'amount', agg:'sum', groupBy:null, filters:{}, topN:null, order:'desc' };
+    if(s && typeof s==='object'){
+      if(['amount','qty','price'].includes(s.metric)) spec.metric=s.metric;
+      if(['sum','avg','max','min','count'].includes(s.agg)) spec.agg=s.agg;
+      if(['store','category','month'].includes(s.groupBy)) spec.groupBy=s.groupBy;
+      const f=s.filters||{};
+      const matchEnum=(v,list)=>{ if(!v) return null; v=String(v).trim();
+        return list.find(e=>e===v)||list.find(e=>e.includes(v))||list.find(e=>v.length>=2&&v.includes(e))||null; };
+      const st=matchEnum(f.store,enums.stores); if(st) spec.filters.store=st;
+      const ct=matchEnum(f.category,enums.cats); if(ct) spec.filters.category=ct;
+      const mm=String(f.month||'').match(/(20\d{2})\D?(\d{1,2})/); if(mm) spec.filters.month=`${mm[1]}-${mm[2].padStart(2,'0')}`;
+      if(+s.topN>0) spec.topN=Math.min(20,Math.round(+s.topN));
+      if(s.order==='asc') spec.order='asc';
+    }
+    return spec;
   }
 
   /* —— 规则兜底解析器 —— */
@@ -583,7 +605,7 @@ const NLU = (() => {
     if(/最高|最低/.test(q) && !spec.groupBy){ spec.groupBy='store'; spec.topN=spec.topN||1; }
     return spec;
   }
-  return { buildExtractPrompt, parseSpecJSON, ruleParse };
+  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse };
 })();
 
 /* =====================================================================
@@ -598,20 +620,27 @@ const LLMClient = (() => {
   function save(c){ localStorage.setItem('qa_cfg', JSON.stringify(c)); }
   function ready(){ return !!cfg().key; }
 
-  async function chat(messages, {maxTokens=300, timeout=15000}={}){
+  async function chat(messages, {maxTokens=300, timeout=15000, jsonMode=false}={}){
     const c = cfg();
     if(!c.key) throw new Error('NO_KEY');
     const ctl = new AbortController();
     const timer = setTimeout(()=>ctl.abort(), timeout);
-    try{
+    async function once(jm){
+      const body = { model:c.model, messages, temperature:0.1, max_tokens:maxTokens, stream:false };
+      if(jm) body.response_format = { type:'json_object' };
       const res = await fetch(c.url.replace(/\/+$/,'')+'/chat/completions', {
         method:'POST',
         headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+c.key },
-        body: JSON.stringify({ model:c.model, messages, temperature:0.1, max_tokens:maxTokens, stream:false }),
+        body: JSON.stringify(body),
         signal: ctl.signal
       });
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      const data = await res.json();
+      if(!res.ok){ const err = new Error('HTTP '+res.status); err.status=res.status; throw err; }
+      return res.json();
+    }
+    try{
+      let data;
+      try{ data = await once(jsonMode); }
+      catch(e){ if(jsonMode && (e.status===400||e.status===422)) data = await once(false); else throw e; }  // 个别网关不支持 json_mode 时自动降级
       const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
       if(!text) throw new Error('空响应');
       return text.trim();
@@ -641,13 +670,23 @@ const Chat = (() => {
     const enums = Store.enumCache;
     let spec, engine = '大模型';
 
-    /* ① 抽参：LLM 优先，失败回退规则引擎 */
+    /* ① 抽参：LLM（JSON mode + 非法输出自愈重试一次）优先，最终兜底规则引擎；两条路径统一过消毒器 */
     try{
       if(!LLMClient.ready()) throw new Error('NO_KEY');
-      const raw = await LLMClient.chat(NLU.buildExtractPrompt(q, lastUserQ, enums), {maxTokens:200});
-      spec = NLU.parseSpecJSON(raw);
+      const msgs = NLU.buildExtractPrompt(q, lastUserQ, enums);
+      const raw = await LLMClient.chat(msgs, {maxTokens:250, jsonMode:true});
+      try{
+        spec = NLU.parseSpecJSON(raw);
+      }catch(e){
+        const fixed = await LLMClient.chat([...msgs,
+          { role:'assistant', content:raw },
+          { role:'user', content:'上面的输出不是合法 JSON，请修正后只输出 JSON，不要任何解释。' }
+        ], {maxTokens:250, jsonMode:true});
+        spec = NLU.parseSpecJSON(fixed);
+      }
+      spec = NLU.sanitizeSpec(spec, enums);
     }catch(e){
-      spec = NLU.ruleParse(q, enums);
+      spec = NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums);
       engine = '本地规则引擎';
     }
 
@@ -795,7 +834,8 @@ const UI = (() => {
     Store.issues = issues;
     Store.enumCache = {
       stores: [...new Set(clean.map(r=>r.store))],
-      cats:   [...new Set(clean.map(r=>r.category))]
+      cats:   [...new Set(clean.map(r=>r.category))],
+      months: [...new Set(clean.map(r=>r.date.slice(0,7)))].sort()
     };
     renderStats(); renderIssues(); renderTable();
     $('btnValidate').disabled = true;
