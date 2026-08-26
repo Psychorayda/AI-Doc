@@ -111,6 +111,11 @@ thead th{position:sticky;top:0;background:#f4f8f6;color:#33504a;font-weight:600;
 tbody td{padding:8px 12px;border-bottom:1px solid #eef2f0;white-space:nowrap}
 tbody tr:hover{background:#f6faf8}
 td.num,th.num{text-align:right;font-family:var(--mono)}
+td.mk-fix{background:#fdf3e7;color:#92400e;cursor:help}
+td.mk-del{background:#fdecec;color:#991b1b;cursor:help}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--text-sub);padding:7px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:#fff;z-index:3;align-items:center}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+.legend+table thead th{top:30px}
 tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdfc;border-top:1px solid var(--border);position:sticky;bottom:0}
 
 /* ================= 对话区 ================= */
@@ -242,12 +247,12 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
       智能问数 <span class="tag">模块 ③</span>
     </div>
     <div class="chat-hints">
-      <div style="font-size:12px;color:var(--text-sub)">问数方向提示：汇总统计 · 排行最值 · 分组对比 · 均值占比 · 趋势（按月）</div>
+      <div style="font-size:12px;color:var(--text-sub)">问数方向提示：汇总统计 · 排行最值 · 分组对比 · 均值占比 · 趋势（按月）· 环比/同比</div>
       <div class="dir" id="hintDir">
         <button class="hint">2026年7月总销售额是多少？</button>
         <button class="hint">哪个门店销售额最高？</button>
         <button class="hint">各品类销量分别是多少？</button>
-        <button class="hint">8月平均每件单价多少？</button>
+        <button class="hint">8月销售额环比增长多少？</button>
         <button class="hint">销售额前三的门店</button>
       </div>
     </div>
@@ -271,11 +276,23 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
     <div class="field"><label>Base URL</label><input id="cfgUrl" placeholder="https://api.deepseek.com/v1"></div>
     <div class="field"><label>API Key</label><input id="cfgKey" type="password" placeholder="sk-..."></div>
     <div class="field"><label>模型</label><input id="cfgModel" placeholder="deepseek-chat"></div>
+    <div class="field"><label style="display:flex;align-items:center;gap:7px;color:var(--text);font-size:13px;cursor:pointer"><input type="checkbox" id="cfgVerify" style="width:auto"> 回答二次校验（多一次低成本调用，核对数字与查询结果一致性）</label></div>
     <div class="tip">降本设计：仅向模型发送「字段 schema + 问题」与「查询结果摘要」，不上传全量数据；回答生成限制 max_tokens。未配置 Key 或调用失败时自动切换本地规则引擎，保证问数必有响应。</div>
     <div class="foot">
       <button class="btn ghost sm" id="btnTest">测试连接</button>
       <button class="btn primary sm" id="btnSaveCfg">保存</button>
     </div>
+  </div>
+</div>
+
+<!-- ========== 通用报错弹窗 ========== -->
+<div class="modal-mask" id="alertMask">
+  <div class="modal">
+    <h3 id="alertTitle">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      提示</h3>
+    <div id="alertBody" style="font-size:13px;line-height:1.7"></div>
+    <div class="foot"><button class="btn primary sm" id="alertOk">知道了</button></div>
   </div>
 </div>
 
@@ -290,9 +307,11 @@ const Store = {
   rawRows: [],        // 原始行
   cleanRows: [],      // 修复后行（问数只查这里）
   issues: [],         // {rowId, field, rule, before, after, action:'fixed'|'removed'}
+  pending: null,      // 载入时预跑的校验结果 {clean, issues}，供原始表标注；点击「开始校验修复」后转正
+  mart: null,         // 修复后数据的预计算标准化结构
   issueFilter: 'all',
   chat: [],           // 多轮记忆 {role, content}
-  enumCache: null     // 供 LLM 抽参的枚举值（门店/品类）
+  enumCache: null     // 供 LLM 抽参的枚举值（门店/品类/月份）
 };
 
 /* =====================================================================
@@ -437,7 +456,50 @@ const Validator = (() => {
  * 模块 3 · ExcelIO —— Excel 解析 / 模拟文件生成（依赖 SheetJS）
  * =================================================================== */
 const ExcelIO = (() => {
-  const HEAD = { '日期':'date', '门店':'store', '品类':'category', '单价':'price', '数量':'qty', '销售额':'amount' };
+  /* 表头字典：标准名 → 字段 key；常见别名 → 标准名（用于纠错建议） */
+  const REQUIRED = [['日期','date'],['门店','store'],['品类','category'],['单价','price'],['数量','qty'],['销售额','amount']];
+  const ALIAS = { '销售日期':'日期','交易日期':'日期','订单日期':'日期','时间':'日期',
+    '店铺':'门店','门店名称':'门店','分店':'门店','网点':'门店',
+    '类别':'品类','分类':'品类','商品类别':'品类','产品类别':'品类',
+    '价格':'单价','单价(元)':'单价','单价（元）':'单价',
+    '销量':'数量','件数':'数量','数量(件)':'数量',
+    '金额':'销售额','流水':'销售额','销售额(元)':'销售额','销售额（元）':'销售额','营收':'销售额' };
+
+  function suggest(h){
+    if(ALIAS[h]) return ALIAS[h];
+    const cands = REQUIRED.map(r=>r[0]).concat(Object.keys(ALIAS));
+    const hit = cands.find(c=>c.includes(h)||(h.length>=2&&h.includes(c)));
+    return hit ? (ALIAS[hit]||hit) : null;
+  }
+
+  /* 表头校验：返回 {map} 或抛出带 details 的错误 */
+  function validateHeaders(headRow){
+    const map = headRow.map(h=>{
+      const s = String(h).trim();
+      const std = REQUIRED.find(r=>r[0]===s) ? s : (ALIAS[s]||null);
+      const hit = std && REQUIRED.find(r=>r[0]===std);
+      return hit ? hit[1] : null;
+    });
+    const mapped = new Set(map.filter(Boolean));
+    const missing = REQUIRED.filter(r=>!mapped.has(r[1])).map(r=>r[0]);
+    const unknown = headRow.map((h,i)=>({h:String(h).trim(),i})).filter(x=>x.h && !map[x.i]);
+    if(missing.length){
+      const details = [];
+      details.push(`缺失必需字段：${missing.map(m=>'「'+m+'」').join('、')}`);
+      unknown.forEach(u=>{
+        const s = suggest(u.h);
+        details.push(s
+          ? `无法识别的字段名「${u.h}」——是否为「${s}」？（若为同义字段请重命名为标准字段名）`
+          : `无法识别的字段名「${u.h}」（与所有标准字段均不匹配）`);
+      });
+      details.push(`标准表头应为：${REQUIRED.map(r=>r[0]).join(' / ')}（支持同义别名，如 店铺→门店、金额→销售额）`);
+      const err = new Error('表头校验失败');
+      err.details = details;
+      throw err;
+    }
+    return { map };
+  }
+
   function parse(file){
     return new Promise((resolve,reject)=>{
       if(typeof XLSX==='undefined') return reject(new Error('SheetJS 未加载（需联网）'));
@@ -447,11 +509,11 @@ const ExcelIO = (() => {
           const wb = XLSX.read(e.target.result,{type:'array'});
           const arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
           if(!arr.length) throw new Error('文件为空');
-          const headRow = arr[0].map(h=>String(h).trim());
-          const map = headRow.map(h=>HEAD[h]||null);
-          if(map.every(x=>!x)) throw new Error('未识别表头，需包含：日期/门店/品类/单价/数量/销售额');
+          const headRow = arr[0];
+          const { map } = validateHeaders(headRow);
           const rows = arr.slice(1).filter(r=>r.some(c=>String(c).trim()!==''))
             .map((r,i)=>{ const o={id:i+1}; map.forEach((k,j)=>{ if(k) o[k]=r[j]; }); return o; });
+          if(!rows.length) throw new Error('表头之外无数据行');
           resolve(rows);
         }catch(err){ reject(err); }
       };
@@ -466,11 +528,63 @@ const ExcelIO = (() => {
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'销售流水');
     XLSX.writeFile(wb,'模拟销售数据_含错误.xlsx');
   }
-  return { parse, downloadMock };
+  return { parse, downloadMock, validateHeaders };
 })();
 
 /* =====================================================================
- * 模块 4 · QueryEngine —— 本地结构化查询（问数的执行层，零成本）
+ * 模块 4 · Mart —— 修复后数据的预计算层（标准化结构，供问数直接命中）
+ * 预计算：月/季/年 × 全局 的合计/均值/计数；门店/品类维度排行；
+ *        门店×月交叉；月度环比/同比增量与增幅
+ * =================================================================== */
+const Mart = (() => {
+  const round = v => Math.round(v*100)/100;
+  const qOf = m => `${m.slice(0,4)}-Q${Math.ceil(+m.slice(5,7)/3)}`;
+  const prevMonth = m => { let [y,mo]=m.split('-').map(Number); mo--; if(mo<1){mo=12;y--;} return `${y}-${String(mo).padStart(2,'0')}`; };
+  const prevYear  = m => `${+m.slice(0,4)-1}${m.slice(4)}`;
+
+  function aggOf(list){
+    const amount = round(list.reduce((a,r)=>a+r.amount,0));
+    const qty = list.reduce((a,r)=>a+r.qty,0);
+    return { amount, qty, priceAvg: qty? round(amount/qty):0, count:list.length };
+  }
+
+  function build(rows){
+    const bucket = { month:{}, quarter:{}, year:{}, store:{}, category:{}, storeMonth:{} };
+    const add = (o,k,r)=>{ (o[k]=o[k]||[]).push(r); };
+    rows.forEach(r=>{
+      const mo = r.date.slice(0,7);
+      add(bucket.month,mo,r); add(bucket.quarter,qOf(mo),r); add(bucket.year,mo.slice(0,4),r);
+      add(bucket.store,r.store,r); add(bucket.category,r.category,r); add(bucket.storeMonth,r.store+'|'+mo,r);
+    });
+    const aggMap = o => Object.fromEntries(Object.entries(o).map(([k,l])=>[k,aggOf(l)]));
+    const mart = {
+      n: rows.length, total: aggOf(rows),
+      month: aggMap(bucket.month), quarter: aggMap(bucket.quarter), year: aggMap(bucket.year),
+      store: aggMap(bucket.store), category: aggMap(bucket.category), storeMonth: aggMap(bucket.storeMonth)
+    };
+    /* 月度环比/同比：增量 + 增幅% */
+    mart.monthCmp = {};
+    Object.keys(mart.month).sort().forEach(m=>{
+      const cur = mart.month[m], pm = mart.month[prevMonth(m)], py = mart.month[prevYear(m)];
+      const cmp = ref => ref ? {
+        amountDelta: round(cur.amount-ref.amount),
+        amountPct: ref.amount ? round((cur.amount-ref.amount)/ref.amount*100) : null,
+        qtyDelta: cur.qty-ref.qty,
+        qtyPct: ref.qty ? round((cur.qty-ref.qty)/ref.qty*100) : null
+      } : null;
+      mart.monthCmp[m] = { mom: cmp(pm), yoy: cmp(py), refMom: prevMonth(m), refYoy: prevYear(m) };
+    });
+    /* 维度排行（按销售额降序，升序由查询层反转即可） */
+    const rankOf = o => Object.entries(o).map(([key,v])=>({key,...v})).sort((a,b)=>b.amount-a.amount);
+    mart.rank = { store: rankOf(mart.store), category: rankOf(mart.category) };
+    return mart;
+  }
+  return { build, prevMonth, prevYear };
+})();
+
+/* =====================================================================
+ * 模块 5 · QueryEngine —— 本地结构化查询（问数的执行层，零成本）
+ * 优先命中 Mart 预计算结果；行级计算兜底；支持环比/同比对比查询
  * =================================================================== */
 const QueryEngine = (() => {
   const METRIC_NAME = { amount:'销售额', qty:'销量', price:'单价' };
@@ -489,8 +603,22 @@ const QueryEngine = (() => {
   }
   const round = v => Math.round(v*100)/100;
 
-  /* spec: {metric, agg, groupBy, filters:{store,category,month}, topN} */
-  function run(spec, rows){
+  /* spec: {metric, agg, groupBy, filters:{store,category,month}, topN, order, compare:'mom'|'yoy'} */
+  function run(spec, rows, mart){
+    /* 环比/同比：直接命中 Mart 预计算 */
+    if(spec.compare && spec.filters && spec.filters.month && mart){
+      const m = spec.filters.month;
+      const cur = mart.month[m];
+      const cmp = (mart.monthCmp[m]||{})[spec.compare];
+      const refM = spec.compare==='mom' ? Mart.prevMonth(m) : Mart.prevYear(m);
+      const field = spec.metric==='qty' ? 'qty' : 'amount';
+      return { type:'compare', compare:spec.compare, metric:spec.metric, month:m, refMonth:refM,
+        cur: cur ? cur[field] : null,
+        ref: cmp ? (field==='qty' ? mart.month[refM].qty : mart.month[refM].amount) : null,
+        delta: cmp ? (field==='qty' ? cmp.qtyDelta : cmp.amountDelta) : null,
+        pct: cmp ? (field==='qty' ? cmp.qtyPct : cmp.amountPct) : null,
+        matched: cur ? cur.count : 0 };
+    }
     let r = rows.slice();
     const f = spec.filters||{};
     if(f.store)   r = r.filter(x=>x.store.includes(f.store));
@@ -505,18 +633,34 @@ const QueryEngine = (() => {
       if(spec.topN) out = out.slice(0,spec.topN);
       return { type:'group', groupBy:spec.groupBy, metric, agg, rows:out, matched:r.length };
     }
-    return { type:'scalar', metric, agg, value:round(aggregate(r,metric,agg)), matched:r.length };
+    return { type:'scalar', metric, agg, value:round(aggregate(r,metric,agg)), matched:r.length,
+      month: f.month||null };
   }
   /* 本地模板化回答（LLM 不可用时的兜底输出） */
-  function renderLocal(spec, res){
+  function renderLocal(spec, res, mart){
     const mName = METRIC_NAME[res.metric], aName = AGG_NAME[res.agg]||'';
     const f = spec.filters||{};
     const scope = [f.month, f.store, f.category].filter(Boolean).join('·') || '全部数据';
+    if(res.type==='compare'){
+      const label = res.compare==='mom' ? '环比' : '同比';
+      const unit = res.metric==='qty' ? ' 件' : ' 元';
+      if(!res.matched) return `${res.month} 没有匹配的数据记录。`;
+      if(res.ref==null) return `${res.month} ${METRIC_NAME[res.metric]}为 ${res.cur.toLocaleString()}${unit}，但缺少${label}基期（${res.refMonth}）数据，无法计算${label}。`;
+      const dir = res.delta>=0 ? '增长' : '下降';
+      return `${res.month} ${METRIC_NAME[res.metric]}为 ${res.cur.toLocaleString()}${unit}，${label}（对比 ${res.refMonth}）${dir} ${Math.abs(res.delta).toLocaleString()}${unit}，${dir}幅 ${Math.abs(res.pct)}%。`;
+    }
     if(res.matched===0) return `在「${scope}」范围内没有匹配的数据记录。`;
     if(res.type==='scalar'){
-      return res.agg==='count'
+      let base = res.agg==='count'
         ? `${scope}共有 ${res.value} 条记录。`
         : `${scope}的${aName}${mName}为 ${res.value.toLocaleString()}${res.metric==='qty'?' 件':res.metric==='amount'?' 元':''}（基于 ${res.matched} 条记录）。`;
+      /* 月度标量查询附赠 Mart 预计算的环比信息 */
+      if(res.month && mart && mart.monthCmp[res.month] && mart.monthCmp[res.month].mom){
+        const c = mart.monthCmp[res.month].mom;
+        if(res.metric==='amount' && c.amountPct!=null) base += `（环比 ${mart.monthCmp[res.month].refMom}：${c.amountDelta>=0?'+':''}${c.amountDelta.toLocaleString()} 元，${c.amountPct>=0?'+':''}${c.amountPct}%）`;
+        if(res.metric==='qty' && c.qtyPct!=null) base += `（环比 ${mart.monthCmp[res.month].refMom}：${c.qtyDelta>=0?'+':''}${c.qtyDelta} 件，${c.qtyPct>=0?'+':''}${c.qtyPct}%）`;
+      }
+      return base;
     }
     const unit = res.metric==='qty'?' 件':res.metric==='amount'?' 元':'';
     const lines = res.rows.map((x,i)=>`${i+1}. ${x.key}：${x.value.toLocaleString()}${unit}（${x.n}条）`);
@@ -526,12 +670,12 @@ const QueryEngine = (() => {
 })();
 
 /* =====================================================================
- * 模块 5 · NLU —— 问数意图解析
+ * 模块 6 · NLU —— 问数意图解析
  *  A. LLM 抽参（主，低成本：prompt 仅含 schema+枚举，不含数据）
  *  B. 规则引擎（兜底，保证永不无响应）
  * =================================================================== */
 const NLU = (() => {
-  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null","order":"desc|asc"}`;
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
     return [
@@ -539,13 +683,14 @@ const NLU = (() => {
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；无法确定的字段填 null。只输出 JSON。
 示例：
-问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc"}
-问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc"}
-问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc"}
-问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc"}
-问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}"},"topN":null,"order":"desc"}` },
+问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":null}
+问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
+问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc","compare":null}
+问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc","compare":null}
+问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":"mom"}
+问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}"},"topN":null,"order":"desc","compare":null}` },
       ...(lastQ ? [{ role:'user', content:`上一轮问题：${lastQ}\n当前问题（可能省略了条件，请结合上一轮补全）：${q}` }] : [{ role:'user', content:q }])
     ];
   }
@@ -570,6 +715,7 @@ const NLU = (() => {
       const mm=String(f.month||'').match(/(20\d{2})\D?(\d{1,2})/); if(mm) spec.filters.month=`${mm[1]}-${mm[2].padStart(2,'0')}`;
       if(+s.topN>0) spec.topN=Math.min(20,Math.round(+s.topN));
       if(s.order==='asc') spec.order='asc';
+      if(['mom','yoy'].includes(s.compare)) spec.compare=s.compare;
     }
     return spec;
   }
@@ -602,6 +748,8 @@ const NLU = (() => {
       const mm = q.match(/(\d{1,2})\s*月/) || q.match(/(十一|十二|[一二两三四五六七八九十])\s*月/);
       if(mm) spec.filters.month = `2026-${String(toMonth(mm[1])).padStart(2,'0')}`;
     }
+    if(/环比/.test(q)) spec.compare='mom';
+    else if(/同比/.test(q)) spec.compare='yoy';
     if(/最高|最低/.test(q) && !spec.groupBy){ spec.groupBy='store'; spec.topN=spec.topN||1; }
     return spec;
   }
@@ -609,10 +757,10 @@ const NLU = (() => {
 })();
 
 /* =====================================================================
- * 模块 6 · LLMClient —— OpenAI 兼容调用（超时控制 + 低成本参数）
+ * 模块 7 · LLMClient —— OpenAI 兼容调用（超时控制 + 低成本参数 + JSON mode）
  * =================================================================== */
 const LLMClient = (() => {
-  const DEFAULT = { url:'https://api.deepseek.com/v1', key:'', model:'deepseek-chat' };
+  const DEFAULT = { url:'https://api.deepseek.com/v1', key:'', model:'deepseek-chat', verify:false };
   function cfg(){
     try{ return Object.assign({}, DEFAULT, JSON.parse(localStorage.getItem('qa_cfg')||'{}')); }
     catch(e){ return {...DEFAULT}; }
@@ -650,7 +798,7 @@ const LLMClient = (() => {
 })();
 
 /* =====================================================================
- * 模块 7 · Chat —— 多轮对话编排：抽参→本地查询→组织回答（全程有反馈）
+ * 模块 8 · Chat —— 多轮对话编排：抽参→本地查询→组织回答（全程有反馈）
  * =================================================================== */
 const Chat = (() => {
   let lastUserQ = null;
@@ -690,29 +838,42 @@ const Chat = (() => {
       engine = '本地规则引擎';
     }
 
-    /* ② 本地查询 */
+    /* ② 本地查询（Mart 预计算优先） */
     let res;
-    try{ res = QueryEngine.run(spec, Store.cleanRows); }
+    try{ res = QueryEngine.run(spec, Store.cleanRows, Store.mart); }
     catch(e){
       thinking.remove();
       UI.addMsg('ai','查询执行出错：'+e.message+'。请换个问法试试。', true);
       return;
     }
 
-    /* ③ 组织回答：LLM 优先，失败用本地模板 */
+    /* ③ 组织回答：LLM 优先，失败用本地模板；可选二次校验（校验员复核数字一致性） */
+    const brief = JSON.stringify(res).slice(0, 1200);
     let answer;
     if(engine==='大模型'){
       try{
-        const brief = JSON.stringify(res).slice(0, 1200);
         const mem = Store.chat.slice(-4);
         answer = await LLMClient.chat([
           { role:'system', content:'你是数据分析助手。根据给定查询结果，用简体中文简洁回答（≤100字），列出关键数字，不要编造结果之外的数据。' },
           ...mem,
           { role:'user', content:`问题：${q}\n查询结果(JSON)：${brief}` }
         ], {maxTokens:220});
-      }catch(e){ engine='本地模板'; answer = QueryEngine.renderLocal(spec, res); }
+      }catch(e){ engine='本地模板'; answer = QueryEngine.renderLocal(spec, res, Store.mart); }
     } else {
-      answer = QueryEngine.renderLocal(spec, res);
+      answer = QueryEngine.renderLocal(spec, res, Store.mart);
+    }
+    /* ③.5 二次校验（同模型分步自检；可在设置中开关） */
+    if(engine==='大模型' && LLMClient.cfg().verify){
+      try{
+        const verdict = await LLMClient.chat([
+          { role:'system', content:'你是结果校验员。核对「回答」中的数字是否与「查询结果JSON」一致、是否正面回应了问题。一致只输出 PASS；不一致输出 FAIL: 简要原因。' },
+          { role:'user', content:`问题：${q}\n查询结果(JSON)：${brief}\n回答：${answer}` }
+        ], {maxTokens:80});
+        if(!/^PASS/i.test(verdict.trim())){
+          engine = '大模型(校验未通过→模板)';
+          answer = QueryEngine.renderLocal(spec, res, Store.mart);
+        }
+      }catch(e){ /* 校验调用失败不阻断主流程，沿用原回答 */ }
     }
 
     thinking.remove();
@@ -726,7 +887,7 @@ const Chat = (() => {
 })();
 
 /* =====================================================================
- * 模块 8 · UI —— 渲染与事件（表格 / 校验报告 / 对话 / 设置 / Toast）
+ * 模块 9 · UI —— 渲染与事件（表格 / 校验报告 / 对话 / 设置 / Toast）
  * =================================================================== */
 const UI = (() => {
   const $ = id => document.getElementById(id);
@@ -754,7 +915,35 @@ const UI = (() => {
       </div>`).join('') || '<div class="empty">该分类下无记录</div>';
   }
 
-  /* ---- 数据表 ---- */
+  /* ---- 原始数据表（标注模式：橙色=将修正，红色=将剔除，悬浮查看规则与处置） ---- */
+  const COLS = [['date','日期'],['store','门店'],['category','品类'],['price','单价'],['qty','数量'],['amount','销售额']];
+  function renderRawTable(){
+    const w = $('tableWrap');
+    const issues = Store.pending ? Store.pending.issues : [];
+    const mark = {};
+    issues.forEach(i=>{ (mark[i.rowId]=mark[i.rowId]||{})[i.field]=i; });
+    w.innerHTML = `<div class="legend">
+        <span><i style="background:#f3d9ae"></i>将修正</span>
+        <span><i style="background:#f3b8b8"></i>将剔除</span>
+        <span style="margin-left:auto">悬浮彩色单元格查看原因 · 共 ${Store.rawRows.length} 行</span>
+      </div>
+      <table>
+      <thead><tr><th>#</th>${COLS.map(c=>`<th${['price','qty','amount','date'].includes(c[0])?' class="num"':''}>${c[1]}</th>`).join('')}</tr></thead>
+      <tbody>${Store.rawRows.map(r=>{
+        const del = mark[r.id] && Object.values(mark[r.id]).some(i=>i.action==='removed');
+        return `<tr${del?' style="opacity:.62"':''}><td style="color:var(--text-sub)">${r.id}</td>` +
+          COLS.map(([k])=>{
+            const mk = mark[r.id] && mark[r.id][k];
+            const v = (r[k]===undefined||r[k]===null||r[k]==='') ? '(空)' : String(r[k]);
+            const cls = ['price','qty','amount','date'].includes(k)?'num':'';
+            if(mk) return `<td class="${cls} ${mk.action==='fixed'?'mk-fix':'mk-del'}" title="[${mk.action==='fixed'?'将修正':'将剔除'}] ${mk.rule}&#10;原值：${String(mk.before)} → 处置：${String(mk.after)}">${v}</td>`;
+            return `<td class="${cls}">${v}</td>`;
+          }).join('') + '</tr>';
+      }).join('')}</tbody>
+      <tfoot><tr><td colspan="7">原始数据预览（含标注）· 点击左侧「开始校验修复」生成清洗后表单</td></tr></tfoot>
+    </table>`;
+    $('tblTag').textContent = `模块 ② · 原始数据（待校验）`;
+  }
   function renderTable(){
     const w = $('tableWrap');
     if(!Store.cleanRows.length){ return; }
@@ -812,24 +1001,25 @@ const UI = (() => {
     Store.cleanRows = [];
     Store.issues = [];
     Store.enumCache = null;
+    Store.mart = null;
     Store.issueFilter = 'all';
+    Store.pending = Validator.run(raw);   // 预跑规则，仅用于原始表标注，不转正
     // 重置各视图到「待校验」状态
     $('stats').style.display = 'none';
     $('issueZone').style.display = 'none';
     $('issueEmpty').style.display = 'block';
     document.querySelectorAll('.f-chip').forEach(x=>x.classList.toggle('on', x.dataset.f==='all'));
-    $('tableWrap').innerHTML = `<div class="empty" style="padding-top:90px">
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-      原始数据已载入 ${raw.length} 行 · 待校验<br>点击左侧「开始校验修复」生成清洗后表单</div>`;
-    $('tblTag').textContent = '模块 ② · 待校验';
+    renderRawTable();
     $('btnValidate').disabled = false;
     resetChat('数据已更新，对话记录已重置。请先点击「开始校验修复」，完成后即可基于清洗后数据提问。');
-    toast(`${sourceName}：已载入 ${raw.length} 行原始数据，请确认后开始校验修复`, 'ok');
+    const p = Store.pending;
+    toast(`${sourceName}：已载入 ${raw.length} 行，预检出问题 ${p.issues.length} 处（橙色将修正 / 红色将剔除），请点击「开始校验修复」`, 'ok');
   }
 
   function runValidation(){
     if(!Store.rawRows.length) return;
-    const { clean, issues } = Validator.run(Store.rawRows);
+    const { clean, issues } = Store.pending || Validator.run(Store.rawRows);
+    Store.pending = null;
     Store.cleanRows = clean;
     Store.issues = issues;
     Store.enumCache = {
@@ -837,9 +1027,17 @@ const UI = (() => {
       cats:   [...new Set(clean.map(r=>r.category))],
       months: [...new Set(clean.map(r=>r.date.slice(0,7)))].sort()
     };
+    Store.mart = Mart.build(clean);   // 预计算标准化结构：月/季/年聚合、维度排行、环比同比
     renderStats(); renderIssues(); renderTable();
     $('btnValidate').disabled = true;
-    toast(`校验完成：修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行`, 'ok');
+    toast(`校验完成：修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行；预计算已就绪`, 'ok');
+  }
+
+  /* ---- 通用报错弹窗 ---- */
+  function showAlert(title, items){
+    $('alertTitle').lastChild.textContent = title;
+    $('alertBody').innerHTML = items.map(t=>`<div style="margin-bottom:6px">· ${t}</div>`).join('');
+    $('alertMask').classList.add('show');
   }
 
   /* ---- 事件绑定 ---- */
@@ -853,7 +1051,10 @@ const UI = (() => {
 
     async function handleFile(f){
       try{ const rows = await ExcelIO.parse(f); loadRaw(rows, f.name); }
-      catch(e){ toast('解析失败：'+e.message, 'err'); }
+      catch(e){
+        if(e.details) showAlert(`上传失败：${f.name} 表头校验未通过`, e.details);
+        else toast('解析失败：'+e.message, 'err');
+      }
     }
 
     $('btnMockLoad').onclick = ()=>loadRaw(MockData.generate(), '模拟数据');
@@ -875,16 +1076,19 @@ const UI = (() => {
     $('btnSettings').onclick = ()=>{
       const c = LLMClient.cfg();
       $('cfgUrl').value=c.url; $('cfgKey').value=c.key; $('cfgModel').value=c.model;
+      $('cfgVerify').checked = !!c.verify;
       $('mask').classList.add('show');
     };
     $('mask').onclick = e=>{ if(e.target===$('mask')) $('mask').classList.remove('show'); };
+    $('alertOk').onclick = ()=>$('alertMask').classList.remove('show');
+    $('alertMask').onclick = e=>{ if(e.target===$('alertMask')) $('alertMask').classList.remove('show'); };
     $('btnSaveCfg').onclick = ()=>{
-      LLMClient.save({ url:$('cfgUrl').value.trim()||'https://api.deepseek.com/v1', key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim()||'deepseek-chat' });
+      LLMClient.save({ url:$('cfgUrl').value.trim()||'https://api.deepseek.com/v1', key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim()||'deepseek-chat', verify:$('cfgVerify').checked });
       $('mask').classList.remove('show');
       refreshChip(); toast('设置已保存','ok');
     };
     $('btnTest').onclick = async ()=>{
-      LLMClient.save({ url:$('cfgUrl').value.trim(), key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim() });
+      LLMClient.save({ url:$('cfgUrl').value.trim(), key:$('cfgKey').value.trim(), model:$('cfgModel').value.trim(), verify:$('cfgVerify').checked });
       try{ await LLMClient.chat([{role:'user',content:'ping，回复pong'}],{maxTokens:10,timeout:10000}); toast('连接成功','ok'); }
       catch(e){ toast('连接失败：'+e.message,'err'); }
       refreshChip();
