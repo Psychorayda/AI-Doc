@@ -215,6 +215,10 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         运行问数评测（黄金集回归）
       </button>
+      <button class="btn block" id="btnEvalLLM" disabled style="margin-top:8px" title="真实调用大模型逐条抽参，约 25 次请求，会产生 token 费用">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+        LLM 通道评测（耗 token）
+      </button>
 
       <div class="stats" id="stats" style="display:none">
         <div class="stat"><b id="stRaw">0</b><span>原始行</span></div>
@@ -609,7 +613,7 @@ const Mart = (() => {
 const QueryEngine = (() => {
   const METRIC_NAME = { amount:'销售额', qty:'销量', price:'单价' };
   const AGG_NAME = { sum:'总', avg:'平均', max:'最高', min:'最低', count:'记录数' };
-  const GROUP_NAME = { store:'门店', category:'品类', month:'月份', quarter:'季度' };
+  const GROUP_NAME = { store:'门店', category:'品类', month:'月份', quarter:'季度', year:'年度' };
   const RANGE_NAME = { price:'单价', qty:'数量', amount:'销售额' };
 
   function aggregate(rows, metric, agg){
@@ -662,7 +666,7 @@ const QueryEngine = (() => {
     if(spec.groupBy){
       const g = {};
       r.forEach(row=>{ const mo = row.date.slice(0,7);
-        const k = spec.groupBy==='month' ? mo : spec.groupBy==='quarter' ? Mart.qOf(mo) : row[spec.groupBy];
+        const k = spec.groupBy==='month' ? mo : spec.groupBy==='quarter' ? Mart.qOf(mo) : spec.groupBy==='year' ? mo.slice(0,4) : row[spec.groupBy];
         (g[k]=g[k]||[]).push(row); });
       let out = Object.entries(g).map(([k,list])=>({key:k, value:round(aggregate(list,metric,agg)), n:list.length}));
       out.sort((a,b)=> spec.order==='asc' ? a.value-b.value : b.value-a.value);
@@ -719,7 +723,7 @@ const QueryEngine = (() => {
  *  B. 规则引擎（兜底，保证永不无响应）
  * =================================================================== */
 const NLU = (() => {
-  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|quarter|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null","quarter":"YYYY-Qn或null","range":{"field":"price|qty|amount","min":数或null,"max":数或null}或null},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null","ratio":"true|false"}`;
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|quarter|year|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null","quarter":"YYYY-Qn或null","range":{"field":"price|qty|amount","min":数或null,"max":数或null}或null},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null","ratio":"true|false"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
     return [
@@ -727,7 +731,7 @@ const NLU = (() => {
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；"各年/逐年/按年"→groupBy=year；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
 示例：
 问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":null}
 问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
@@ -754,7 +758,7 @@ const NLU = (() => {
     if(s && typeof s==='object'){
       if(['amount','qty','price'].includes(s.metric)) spec.metric=s.metric;
       if(['sum','avg','max','min','count'].includes(s.agg)) spec.agg=s.agg;
-      if(['store','category','month','quarter'].includes(s.groupBy)) spec.groupBy=s.groupBy;
+      if(['store','category','month','quarter','year'].includes(s.groupBy)) spec.groupBy=s.groupBy;
       const f=s.filters||{};
       const matchEnum=(v,list)=>{ if(!v) return null; v=String(v).trim();
         return list.find(e=>e===v)||list.find(e=>e.includes(v))||list.find(e=>v.length>=2&&v.includes(e))||null; };
@@ -801,6 +805,7 @@ const NLU = (() => {
     /* 季度（先于年份匹配，避免"2026年三季度"被吞成仅年份） */
     const QMAP={'一':1,'二':2,'三':3,'四':4};
     if(/各季度|按季度|分季度|季度.*对比/.test(q)) spec.groupBy='quarter';
+    else if(/各年|按年|逐年|每年|年度.*对比/.test(q)) spec.groupBy='year';
     const qq = q.match(/(20\d{2})\s*年?\s*(?:第\s*([一二三四1-4])\s*(?:个)?季度|Q([1-4]))/i)
             || q.match(/(?:第\s*)?([一二三四1-4])\s*(?:个)?季度/);
     if(qq){
@@ -842,7 +847,15 @@ const NLU = (() => {
     if(/最高|最低/.test(q) && !spec.groupBy){ spec.groupBy='store'; spec.topN=spec.topN||1; }
     return spec;
   }
-  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse };
+  /* —— 规则通道上下文合并：追问（那/呢/再/换成…）时继承上一轮缺失的过滤条件 —— */
+  function mergeContext(spec, lastSpec, q){
+    if(!lastSpec || !/(那|呢|再|换成|改为|看看)/.test(q)) return spec;
+    const f = spec.filters, pf = lastSpec.filters||{};
+    ['month','year','quarter','store','category'].forEach(k=>{ if(!f[k] && pf[k]) f[k]=pf[k]; });
+    if(spec.groupBy===null && lastSpec.groupBy && !/(各|每|分别|对比|哪个|前)/.test(q)) spec.groupBy=lastSpec.groupBy;
+    return spec;
+  }
+  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse, mergeContext };
 })();
 
 /* =====================================================================
@@ -891,8 +904,9 @@ const LLMClient = (() => {
  * =================================================================== */
 const Chat = (() => {
   let lastUserQ = null;
+  let lastSpec = null;   // 上一轮最终执行的 spec，供规则通道追问继承
 
-  function reset(){ lastUserQ = null; }
+  function reset(){ lastUserQ = null; lastSpec = null; }
 
   async function ask(q){
     if(!Store.cleanRows.length){
@@ -906,8 +920,8 @@ const Chat = (() => {
     const t0 = performance.now();
     const enums = Store.enumCache;
 
-    /* ① 双通道抽参：规则（本地零成本）与 LLM 并行，消毒后结构比对 */
-    const ruleSpec = NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums);
+    /* ① 双通道抽参：规则（本地零成本，含追问上下文合并）与 LLM 并行，消毒后结构比对 */
+    const ruleSpec = NLU.mergeContext(NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums), lastSpec, q);
     let llmSpec = null;
     if(LLMClient.ready()){
       try{
@@ -982,6 +996,7 @@ const Chat = (() => {
     const ms = Math.round(performance.now()-t0);
     UI.addMsg('ai', answer, false, `引擎：${engine} · 命中 ${res.matched} 条 · ${ms}ms`);
     lastUserQ = q;
+    lastSpec = spec;
     Store.chat.push({role:'user', content:q}, {role:'assistant', content:answer});
     if(Store.chat.length>12) Store.chat = Store.chat.slice(-12);  // 控制记忆长度=控制成本
   }
@@ -1015,7 +1030,10 @@ const EvalRunner = (() => {
     { q:'华东旗舰店7月卖了多少',        e:{store:'华东旗舰店', month:'2026-07'},           m:'pos'  },
     { q:'烘焙点心2025年销量',           e:{category:'烘焙点心', year:'2025', metric:'qty'},m:'pos' },
     { q:'十二月份有数据吗？',           e:{month:'2026-12'},                              m:'zero' },
-    { q:'西南锦江店销售额',             e:{store:'西南锦江店'},                            m:'pos'  }
+    { q:'西南锦江店销售额',             e:{store:'西南锦江店'},                            m:'pos'  },
+    { q:'各年销售额对比',               e:{groupBy:'year'},                               m:'pos'  },
+    { q:'那8月呢？',                   e:{month:'2026-08'},                              m:'pos', prev:{filters:{month:'2026-07'}} },
+    { q:'那华南天河店呢？',             e:{store:'华南天河店', month:'2026-07'},           m:'pos', prev:{filters:{month:'2026-07'}} }
   ];
   function check(spec, e){
     for(const k of ['metric','agg','groupBy','compare','order']){
@@ -1034,6 +1052,13 @@ const EvalRunner = (() => {
     }
     return null;
   }
+  /* 单条用例判定：spec 字段 + 命中行为 */
+  function judge(c, spec, res){
+    const specErr = check(spec, c.e);
+    const mOk = c.m==='pos' ? res.matched>0 : res.matched===0;
+    if(!specErr && mOk) return null;
+    return `「${c.q}」${[specErr, mOk?null:`命中期望${c.m==='pos'?'>0':'=0'}，实际${res.matched}`].filter(Boolean).join('；')}`;
+  }
   function run(){
     const rows = Store.cleanRows, mart = Store.mart, enums = Store.enumCache;
     let pass = 0; const fails = [];
@@ -1041,16 +1066,32 @@ const EvalRunner = (() => {
       let spec, res;
       try{
         spec = NLU.sanitizeSpec(NLU.ruleParse(c.q, enums), enums);
+        if(c.prev) spec = NLU.mergeContext(spec, NLU.sanitizeSpec(c.prev, enums), c.q);
         res = QueryEngine.run(spec, rows, mart);
       }catch(err){ fails.push(`「${c.q}」执行异常：${err.message}`); continue; }
-      const specErr = check(spec, c.e);
-      const mOk = c.m==='pos' ? res.matched>0 : res.matched===0;
-      if(!specErr && mOk) pass++;
-      else fails.push(`「${c.q}」${[specErr, mOk?null:`命中期望${c.m==='pos'?'>0':'=0'}，实际${res.matched}`].filter(Boolean).join('；')}`);
+        const errMsg = judge(c, spec, res);
+        if(errMsg) fails.push(errMsg); else pass++;
     }
     return { pass, total: CASES.length, fails };
   }
-  return { run, CASES };
+  /* LLM 通道评测：逐条真实调用抽参接口（消耗 token，约 25 次请求），带进度回调 */
+  async function runLLM(onProgress){
+    const rows = Store.cleanRows, mart = Store.mart, enums = Store.enumCache;
+    let pass = 0; const fails = [];
+    for(let i=0;i<CASES.length;i++){
+      const c = CASES[i];
+      if(onProgress) onProgress(i+1, CASES.length);
+      try{
+        const raw = await LLMClient.chat(NLU.buildExtractPrompt(c.q, null, enums), {maxTokens:280, jsonMode:true});
+        const spec = NLU.sanitizeSpec(NLU.parseSpecJSON(raw), enums);
+        const res = QueryEngine.run(spec, rows, mart);
+        const errMsg = judge(c, spec, res);
+        if(errMsg) fails.push(errMsg); else pass++;
+      }catch(err){ fails.push(`「${c.q}」LLM 调用异常：${err.message}`); }
+    }
+    return { pass, total: CASES.length, fails };
+  }
+  return { run, runLLM, CASES };
 })();
 
 /* =====================================================================
@@ -1236,6 +1277,7 @@ const UI = (() => {
     renderRawTable();
     $('btnValidate').disabled = false;
     $('btnEval').disabled = true;
+    $('btnEvalLLM').disabled = true;
     resetChat('数据已更新，对话记录已重置。请先点击「开始校验修复」，完成后即可基于清洗后数据提问。');
     const p = Store.pending;
     toast(`${sourceName}：已载入 ${raw.length} 行，预检出问题 ${p.issues.length} 处（橙色将修正 / 红色将剔除），请点击「开始校验修复」`, 'ok');
@@ -1257,6 +1299,7 @@ const UI = (() => {
     renderStats(); renderIssues(); renderTable();
     $('btnValidate').disabled = true;
     $('btnEval').disabled = false;
+    $('btnEvalLLM').disabled = !LLMClient.ready();
     toast(`校验完成：修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行；预计算已就绪`, 'ok');
   }
 
@@ -1290,8 +1333,20 @@ const UI = (() => {
     $('btnEval').onclick = ()=>{
       const r = EvalRunner.run();
       const pct = Math.round(r.pass/r.total*100);
-      showAlert(`问数评测：通过 ${r.pass}/${r.total}（${pct}%）`,
+      showAlert(`问数评测（规则通道）：通过 ${r.pass}/${r.total}（${pct}%）`,
         r.fails.length ? r.fails.concat('—— 以上为失败用例，可据此修订规则或 prompt ——') : ['全部用例通过，规则通道表现稳定。']);
+    };
+    $('btnEvalLLM').onclick = async ()=>{
+      $('btnEvalLLM').disabled = true;
+      try{
+        const r = await EvalRunner.runLLM((i,n)=>{ $('btnEvalLLM').textContent = `LLM 评测中 ${i}/${n}…`; });
+        const pct = Math.round(r.pass/r.total*100);
+        showAlert(`问数评测（LLM 通道）：通过 ${r.pass}/${r.total}（${pct}%）`,
+          r.fails.length ? r.fails.concat('—— 失败用例可用于优化 few-shot 示例或规则 ——') : ['全部用例通过，LLM 抽参稳定。']);
+      }finally{
+        $('btnEvalLLM').innerHTML = 'LLM 通道评测（耗 token）';
+        $('btnEvalLLM').disabled = !(LLMClient.ready() && Store.cleanRows.length);
+      }
     };
 
     /* 表头排序/筛选（事件委托）+ 筛选弹层外点关闭 */
@@ -1348,6 +1403,7 @@ const UI = (() => {
       const ok = LLMClient.ready();
       $('llmChip').textContent = ok ? `已接入 ${LLMClient.cfg().model}` : '未配置 API Key · 本地规则引擎兜底';
       $('llmChip').className = 'chip'+(ok?'':' warn');
+      $('btnEvalLLM').disabled = !(ok && Store.cleanRows.length);
     }
     refreshChip();
   }
