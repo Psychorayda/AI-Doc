@@ -83,7 +83,7 @@ main{flex:1;display:grid;min-height:0;gap:14px;padding:14px;
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 
 /* ================= 统计卡 ================= */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0}
 .stat{background:#f8faf9;border:1px solid var(--border);border-radius:var(--r-md);padding:9px 8px;text-align:center}
 .stat b{display:block;font-family:var(--mono);font-size:17px;color:var(--primary)}
 .stat.warn b{color:var(--warning)}.stat.bad b{color:var(--danger)}
@@ -211,12 +211,17 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
         开始校验修复
       </button>
       <div class="tip" style="margin-top:8px">数据载入后需手动点击上方按钮执行校验修复，确认后再进入表单与问数环节。</div>
+      <button class="btn block" id="btnEval" disabled style="margin-top:10px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        运行问数评测（黄金集回归）
+      </button>
 
       <div class="stats" id="stats" style="display:none">
         <div class="stat"><b id="stRaw">0</b><span>原始行</span></div>
         <div class="stat warn"><b id="stFixed">0</b><span>已修正</span></div>
         <div class="stat bad"><b id="stRemoved">0</b><span>已剔除</span></div>
         <div class="stat"><b id="stClean">0</b><span>保留行</span></div>
+        <div class="stat"><b id="stArb">0</b><span>双通道仲裁</span></div>
       </div>
 
       <div id="issueZone" style="display:none">
@@ -594,7 +599,7 @@ const Mart = (() => {
     mart.rank = { store: rankOf(mart.store), category: rankOf(mart.category) };
     return mart;
   }
-  return { build, prevMonth, prevYear };
+  return { build, prevMonth, prevYear, qOf };
 })();
 
 /* =====================================================================
@@ -604,7 +609,8 @@ const Mart = (() => {
 const QueryEngine = (() => {
   const METRIC_NAME = { amount:'销售额', qty:'销量', price:'单价' };
   const AGG_NAME = { sum:'总', avg:'平均', max:'最高', min:'最低', count:'记录数' };
-  const GROUP_NAME = { store:'门店', category:'品类', month:'月份' };
+  const GROUP_NAME = { store:'门店', category:'品类', month:'月份', quarter:'季度' };
+  const RANGE_NAME = { price:'单价', qty:'数量', amount:'销售额' };
 
   function aggregate(rows, metric, agg){
     if(agg==='count') return rows.length;
@@ -640,10 +646,24 @@ const QueryEngine = (() => {
     if(f.category)r = r.filter(x=>x.category.includes(f.category));
     if(f.month)   r = r.filter(x=>x.date.startsWith(f.month));
     else if(f.year) r = r.filter(x=>x.date.startsWith(f.year));
+    if(f.quarter) r = r.filter(x=>Mart.qOf(x.date.slice(0,7))===f.quarter);
+    if(f.range)   r = r.filter(x=>(f.range.min===undefined||x[f.range.field]>=f.range.min)&&(f.range.max===undefined||x[f.range.field]<=f.range.max));
     const metric = spec.metric||'amount', agg = spec.agg||'sum';
+    /* 占比：子集 ÷ 时间范围总体（时间过滤外的其余过滤构成子集） */
+    if(spec.ratio){
+      const timeRows = rows.filter(x=>(!f.month||x.date.startsWith(f.month))&&(!f.year||x.date.startsWith(f.year))&&(!f.quarter||Mart.qOf(x.date.slice(0,7))===f.quarter));
+      const fld = metric==='qty'?'qty':'amount';
+      const part = r.reduce((a,x)=>a+(fld==='qty'?x.qty:x.amount),0);
+      const whole = timeRows.reduce((a,x)=>a+(fld==='qty'?x.qty:x.amount),0);
+      return { type:'ratio', metric, part:round(part), whole:round(whole),
+        pct: whole? round(part/whole*100):0, matched:r.length, scopeN:timeRows.length,
+        label: f.store||f.category||'所选范围' };
+    }
     if(spec.groupBy){
       const g = {};
-      r.forEach(row=>{ const k = spec.groupBy==='month' ? row.date.slice(0,7) : row[spec.groupBy]; (g[k]=g[k]||[]).push(row); });
+      r.forEach(row=>{ const mo = row.date.slice(0,7);
+        const k = spec.groupBy==='month' ? mo : spec.groupBy==='quarter' ? Mart.qOf(mo) : row[spec.groupBy];
+        (g[k]=g[k]||[]).push(row); });
       let out = Object.entries(g).map(([k,list])=>({key:k, value:round(aggregate(list,metric,agg)), n:list.length}));
       out.sort((a,b)=> spec.order==='asc' ? a.value-b.value : b.value-a.value);
       if(spec.topN) out = out.slice(0,spec.topN);
@@ -656,7 +676,15 @@ const QueryEngine = (() => {
   function renderLocal(spec, res, mart){
     const mName = METRIC_NAME[res.metric], aName = AGG_NAME[res.agg]||'';
     const f = spec.filters||{};
-    const scope = [f.month, f.year, f.store, f.category].filter(Boolean).join('·') || '全部数据';
+    const scope = [f.month, f.year, f.quarter, f.store, f.category,
+      f.range?`${RANGE_NAME[f.range.field]}${f.range.min!==undefined?'≥'+f.range.min:''}${f.range.max!==undefined?'≤'+f.range.max:''}`:null
+    ].filter(Boolean).join('·') || '全部数据';
+    if(res.type==='ratio'){
+      const unit = res.metric==='qty' ? ' 件' : ' 元';
+      if(!res.scopeN) return '当前时间范围内没有数据，无法计算占比。';
+      if(!res.matched) return `「${res.label}」在该范围内没有匹配记录，占比为 0%。`;
+      return `${res.label}的${METRIC_NAME[res.metric]}为 ${res.part.toLocaleString()}${unit}，占${f.month||f.year||f.quarter||'全部'}总量 ${res.whole.toLocaleString()}${unit} 的 ${res.pct}%（命中 ${res.matched} 条）。`;
+    }
     if(res.type==='compare'){
       const label = res.compare==='mom' ? '环比' : '同比';
       const unit = res.metric==='qty' ? ' 件' : ' 元';
@@ -691,7 +719,7 @@ const QueryEngine = (() => {
  *  B. 规则引擎（兜底，保证永不无响应）
  * =================================================================== */
 const NLU = (() => {
-  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null"},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null"}`;
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|quarter|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null","quarter":"YYYY-Qn或null","range":{"field":"price|qty|amount","min":数或null,"max":数或null}或null},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null","ratio":"true|false"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
     return [
@@ -699,7 +727,7 @@ const NLU = (() => {
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc, compare=null；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；只有年份没有月份→填 year 而非 month；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
 示例：
 问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":null}
 问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
@@ -707,7 +735,10 @@ const NLU = (() => {
 问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc","compare":null}
 问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":"mom"}
 问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}","year":null},"topN":null,"order":"desc","compare":null}
-问：2024年销售额是多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":"2024"},"topN":null,"order":"desc","compare":null}` },
+问：2024年销售额是多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":"2024"},"topN":null,"order":"desc","compare":null}
+问：现制饮品销售额占比多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":"现制饮品","month":null,"year":null},"topN":null,"order":"desc","compare":null,"ratio":true}
+问：单价30元以上的销量 → {"metric":"qty","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":null,"range":{"field":"price","min":30,"max":null}},"topN":null,"order":"desc","compare":null,"ratio":false}
+问：三季度销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":null,"quarter":"2026-Q3"},"topN":null,"order":"desc","compare":null,"ratio":false}` },
       ...(lastQ ? [{ role:'user', content:`上一轮问题：${lastQ}\n当前问题（可能省略了条件，请结合上一轮补全）：${q}` }] : [{ role:'user', content:q }])
     ];
   }
@@ -723,7 +754,7 @@ const NLU = (() => {
     if(s && typeof s==='object'){
       if(['amount','qty','price'].includes(s.metric)) spec.metric=s.metric;
       if(['sum','avg','max','min','count'].includes(s.agg)) spec.agg=s.agg;
-      if(['store','category','month'].includes(s.groupBy)) spec.groupBy=s.groupBy;
+      if(['store','category','month','quarter'].includes(s.groupBy)) spec.groupBy=s.groupBy;
       const f=s.filters||{};
       const matchEnum=(v,list)=>{ if(!v) return null; v=String(v).trim();
         return list.find(e=>e===v)||list.find(e=>e.includes(v))||list.find(e=>v.length>=2&&v.includes(e))||null; };
@@ -731,9 +762,17 @@ const NLU = (() => {
       const ct=matchEnum(f.category,enums.cats); if(ct) spec.filters.category=ct;
       const mm=String(f.month||'').match(/(20\d{2})\D?(\d{1,2})/); if(mm) spec.filters.month=`${mm[1]}-${mm[2].padStart(2,'0')}`;
       const yy=String(f.year||'').match(/(20\d{2})/); if(yy && !spec.filters.month) spec.filters.year=yy[1];
+      const qq=String(f.quarter||'').match(/(20\d{2})\D?Q?([1-4])/i); if(qq && !spec.filters.month) spec.filters.quarter=`${qq[1]}-Q${qq[2]}`;
+      if(f.range && ['price','qty','amount'].includes(f.range.field)){
+        const rg={field:f.range.field};
+        if(+f.range.min>0 || +f.range.min===0) rg.min=+f.range.min;
+        if(+f.range.max>0) rg.max=+f.range.max;
+        if(rg.min!==undefined||rg.max!==undefined) spec.filters.range=rg;
+      }
       if(+s.topN>0) spec.topN=Math.min(20,Math.round(+s.topN));
       if(s.order==='asc') spec.order='asc';
       if(['mom','yoy'].includes(s.compare)) spec.compare=s.compare;
+      if(s.ratio===true||s.ratio==='true') spec.ratio=true;
     }
     return spec;
   }
@@ -741,8 +780,37 @@ const NLU = (() => {
   /* —— 规则兜底解析器 —— */
   function ruleParse(q, enums){
     const spec = { metric:'amount', agg:'sum', groupBy:null, filters:{}, topN:null };
-    if(/销量|数量|多少件|几件/.test(q)) spec.metric='qty';
-    else if(/单价|均价|价格/.test(q)) spec.metric='price';
+    if(/占比|比例|占了/.test(q)) spec.ratio=true;
+    /* 阈值过滤：单价30以上 / 销量超过15件 / 销售额1000以内（匹配片段从指标识别中剔除） */
+    const RANGE_P = [
+      [/(?:单价|价格)[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:元)?\s*(?:以上|超过|大于|高于)/,'price','min'],
+      [/(?:销量|数量)[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:件)?\s*(?:以上|超过|大于|高于)/,'qty','min'],
+      [/销售额[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:元)?\s*(?:以上|超过|大于|高于)/,'amount','min'],
+      [/(?:单价|价格)[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:元)?\s*(?:以下|以内|小于|低于)/,'price','max'],
+      [/(?:销量|数量)[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:件)?\s*(?:以下|以内|小于|低于)/,'qty','max'],
+      [/销售额[^\d]{0,5}(\d+(?:\.\d+)?)\s*(?:元)?\s*(?:以下|以内|小于|低于)/,'amount','max'],
+      [/(?:单价|价格)(?:超过|大于|高于|多于|超)[^\d]{0,2}(\d+(?:\.\d+)?)/,'price','min'],
+      [/(?:销量|数量)(?:超过|大于|高于|多于|超)[^\d]{0,2}(\d+(?:\.\d+)?)/,'qty','min'],
+      [/销售额(?:超过|大于|高于|多于|超)[^\d]{0,2}(\d+(?:\.\d+)?)/,'amount','min'],
+      [/(?:单价|价格)(?:低于|小于|不足|不到)[^\d]{0,2}(\d+(?:\.\d+)?)/,'price','max'],
+      [/(?:销量|数量)(?:低于|小于|不足|不到)[^\d]{0,2}(\d+(?:\.\d+)?)/,'qty','max'],
+      [/销售额(?:低于|小于|不足|不到)[^\d]{0,2}(\d+(?:\.\d+)?)/,'amount','max']
+    ];
+    let metricQ = q;
+    for(const [re,fld,mm] of RANGE_P){ const m=q.match(re); if(m){ spec.filters.range={field:fld}; spec.filters.range[mm]=+m[1]; metricQ=q.replace(m[0],' '); break; } }
+    /* 季度（先于年份匹配，避免"2026年三季度"被吞成仅年份） */
+    const QMAP={'一':1,'二':2,'三':3,'四':4};
+    if(/各季度|按季度|分季度|季度.*对比/.test(q)) spec.groupBy='quarter';
+    const qq = q.match(/(20\d{2})\s*年?\s*(?:第\s*([一二三四1-4])\s*(?:个)?季度|Q([1-4]))/i)
+            || q.match(/(?:第\s*)?([一二三四1-4])\s*(?:个)?季度/);
+    if(qq){
+      const qn = qq[2]||qq[3]||qq[1];
+      const n = /^\d$/.test(qn) ? +qn : QMAP[qn];
+      const ym2 = qq[0].match(/20\d{2}/);
+      spec.filters.quarter = (ym2?ym2[0]:'@DEF@') + '-Q' + n;
+    }
+    if(/销量|数量|多少件|几件/.test(metricQ)) spec.metric='qty';
+    else if(/单价|均价|价格/.test(metricQ)) spec.metric='price';
     if(/平均|均值/.test(q)) spec.agg='avg';
     else if(/最高|最大|最多|第一|最厉害/.test(q)){ spec.agg='sum'; spec.topN=spec.topN||1; }
     else if(/最低|最少/.test(q)){ spec.agg='sum'; spec.order='asc'; }
@@ -761,9 +829,10 @@ const NLU = (() => {
     const CNM = {'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12};
     const toMonth = s => /^\d+$/.test(s) ? +s : CNM[s];
     const defYear = (enums.months && enums.months.length) ? enums.months[enums.months.length-1].slice(0,4) : '2026';
+    if(spec.filters.quarter && spec.filters.quarter.includes('@DEF@')) spec.filters.quarter = spec.filters.quarter.replace('@DEF@', defYear);
     const ym = q.match(/(20\d{2})\s*年?\s*(\d{1,2})\s*月/) || q.match(/(20\d{2})\s*年\s*(十一|十二|[一二两三四五六七八九十])\s*月/);
     if(ym) spec.filters.month = `${ym[1]}-${String(toMonth(ym[2])).padStart(2,'0')}`;
-    else {
+    else if(!spec.filters.quarter){
       const mm = q.match(/(\d{1,2})\s*月/) || q.match(/(十一|十二|[一二两三四五六七八九十])\s*月/);
       if(mm) spec.filters.month = `${defYear}-${String(toMonth(mm[1])).padStart(2,'0')}`;
       else { const yy = q.match(/(20\d{2})\s*年/); if(yy) spec.filters.year = yy[1]; }  // 仅年份
@@ -836,32 +905,45 @@ const Chat = (() => {
     const thinking = UI.addThinking();
     const t0 = performance.now();
     const enums = Store.enumCache;
-    let spec, engine = '大模型';
 
-    /* ① 抽参：LLM（JSON mode + 非法输出自愈重试一次）优先，最终兜底规则引擎；两条路径统一过消毒器 */
-    try{
-      if(!LLMClient.ready()) throw new Error('NO_KEY');
-      const msgs = NLU.buildExtractPrompt(q, lastUserQ, enums);
-      const raw = await LLMClient.chat(msgs, {maxTokens:250, jsonMode:true});
+    /* ① 双通道抽参：规则（本地零成本）与 LLM 并行，消毒后结构比对 */
+    const ruleSpec = NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums);
+    let llmSpec = null;
+    if(LLMClient.ready()){
       try{
-        spec = NLU.parseSpecJSON(raw);
-      }catch(e){
-        const fixed = await LLMClient.chat([...msgs,
-          { role:'assistant', content:raw },
-          { role:'user', content:'上面的输出不是合法 JSON，请修正后只输出 JSON，不要任何解释。' }
-        ], {maxTokens:250, jsonMode:true});
-        spec = NLU.parseSpecJSON(fixed);
-      }
-      spec = NLU.sanitizeSpec(spec, enums);
-    }catch(e){
-      spec = NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums);
-      engine = '本地规则引擎';
+        const msgs = NLU.buildExtractPrompt(q, lastUserQ, enums);
+        const raw = await LLMClient.chat(msgs, {maxTokens:280, jsonMode:true});
+        try{
+          llmSpec = NLU.parseSpecJSON(raw);
+        }catch(e){
+          const fixed = await LLMClient.chat([...msgs,
+            { role:'assistant', content:raw },
+            { role:'user', content:'上面的输出不是合法 JSON，请修正后只输出 JSON，不要任何解释。' }
+          ], {maxTokens:280, jsonMode:true});
+          llmSpec = NLU.parseSpecJSON(fixed);
+        }
+        llmSpec = NLU.sanitizeSpec(llmSpec, enums);
+      }catch(e){ llmSpec = null; }
     }
 
-    /* ② 本地查询（Mart 预计算优先） */
-    let res;
-    try{ res = QueryEngine.run(spec, Store.cleanRows, Store.mart); }
-    catch(e){
+    /* ② 仲裁与查询：一致直接执行；不一致则 LLM 优先、0 命中时回退规则（不打扰用户） */
+    let spec, res, engine;
+    const runQ = s => QueryEngine.run(s, Store.cleanRows, Store.mart);
+    try{
+      if(llmSpec){
+        if(JSON.stringify(llmSpec)===JSON.stringify(ruleSpec)){ spec=llmSpec; res=runQ(spec); engine='双通道一致'; }
+        else{
+          const rL = runQ(llmSpec), rR = runQ(ruleSpec);
+          if(rL.matched>0 || rR.matched===0){ spec=llmSpec; res=rL; }
+          else{ spec=ruleSpec; res=rR; }
+          engine='双通道仲裁';
+          Store.arbCount = (Store.arbCount||0)+1;
+          const el = document.getElementById('stArb'); if(el) el.textContent = Store.arbCount;
+        }
+      }else{
+        spec=ruleSpec; res=runQ(spec); engine='本地规则引擎';
+      }
+    }catch(e){
       thinking.remove();
       UI.addMsg('ai','查询执行出错：'+e.message+'。请换个问法试试。', true);
       return;
@@ -870,7 +952,7 @@ const Chat = (() => {
     /* ③ 组织回答：LLM 优先，失败用本地模板；可选二次校验（校验员复核数字一致性） */
     const brief = JSON.stringify(res).slice(0, 1200);
     let answer;
-    if(engine==='大模型'){
+    if(llmSpec){
       try{
         const mem = Store.chat.slice(-4);
         answer = await LLMClient.chat([
@@ -883,7 +965,7 @@ const Chat = (() => {
       answer = QueryEngine.renderLocal(spec, res, Store.mart);
     }
     /* ③.5 二次校验（同模型分步自检；可在设置中开关） */
-    if(engine==='大模型' && LLMClient.cfg().verify){
+    if(llmSpec && engine!=='本地模板' && LLMClient.cfg().verify){
       try{
         const verdict = await LLMClient.chat([
           { role:'system', content:'你是结果校验员。核对「回答」中的数字是否与「查询结果JSON」一致、是否正面回应了问题。一致只输出 PASS；不一致输出 FAIL: 简要原因。' },
@@ -907,7 +989,72 @@ const Chat = (() => {
 })();
 
 /* =====================================================================
- * 模块 9 · UI —— 渲染与事件（表格 / 校验报告 / 对话 / 设置 / Toast）
+ * 模块 9 · EvalRunner —— 黄金问数集回归评测（规则通道离线零成本）
+ * =================================================================== */
+const EvalRunner = (() => {
+  /* e: 期望 spec 关键字段；m: 期望命中 'pos'(>0) | 'zero'(===0) */
+  const CASES = [
+    { q:'八月份总销售额是多少？',        e:{metric:'amount', month:'2026-08'},            m:'pos'  },
+    { q:'2025年销售额',                 e:{year:'2025'},                                 m:'pos'  },
+    { q:'2024年销售额',                 e:{year:'2024'},                                 m:'zero' },
+    { q:'哪个门店销售额最高？',          e:{groupBy:'store', topN:1},                     m:'pos'  },
+    { q:'销售额最低的三个门店',          e:{groupBy:'store', topN:3, order:'asc'},         m:'pos'  },
+    { q:'销量最高的前三个品类',          e:{metric:'qty', groupBy:'category', topN:3},     m:'pos'  },
+    { q:'各品类销量分别是多少？',        e:{metric:'qty', groupBy:'category'},             m:'pos'  },
+    { q:'各月销售额趋势',               e:{groupBy:'month'},                              m:'pos'  },
+    { q:'各季度销售额对比',             e:{groupBy:'quarter'},                            m:'pos'  },
+    { q:'8月平均每件单价多少？',         e:{metric:'price', agg:'avg', month:'2026-08'},   m:'pos'  },
+    { q:'有多少条记录？',               e:{agg:'count'},                                 m:'pos'  },
+    { q:'8月销售额环比增长多少？',        e:{compare:'mom', month:'2026-08'},               m:'pos'  },
+    { q:'2026年7月销售额同比增长多少？',  e:{compare:'yoy', month:'2026-07'},               m:'pos'  },
+    { q:'现制饮品销售额占比多少？',       e:{ratio:true, category:'现制饮品'},              m:'pos'  },
+    { q:'烘焙点心的销量占比',           e:{ratio:true, metric:'qty', category:'烘焙点心'}, m:'pos' },
+    { q:'单价30元以上的总销售额',        e:{range:{field:'price', min:30}},                m:'pos'  },
+    { q:'销量超过15件的记录有多少条',     e:{agg:'count', range:{field:'qty', min:15}},     m:'pos'  },
+    { q:'2026年三季度销售额',           e:{quarter:'2026-Q3'},                            m:'pos'  },
+    { q:'华东旗舰店7月卖了多少',        e:{store:'华东旗舰店', month:'2026-07'},           m:'pos'  },
+    { q:'烘焙点心2025年销量',           e:{category:'烘焙点心', year:'2025', metric:'qty'},m:'pos' },
+    { q:'十二月份有数据吗？',           e:{month:'2026-12'},                              m:'zero' },
+    { q:'西南锦江店销售额',             e:{store:'西南锦江店'},                            m:'pos'  }
+  ];
+  function check(spec, e){
+    for(const k of ['metric','agg','groupBy','compare','order']){
+      if(e[k]!==undefined && (spec[k]||null)!==e[k]) return `期望 ${k}=${e[k]}，实际 ${spec[k]||'空'}`;
+    }
+    if(e.topN!==undefined && spec.topN!==e.topN) return `期望 topN=${e.topN}，实际 ${spec.topN}`;
+    if(e.ratio && !spec.ratio) return '期望 ratio=true，实际未识别';
+    const f = spec.filters||{};
+    for(const k of ['month','year','store','category','quarter']){
+      if(e[k]!==undefined && f[k]!==e[k]) return `期望 filters.${k}=${e[k]}，实际 ${f[k]||'空'}`;
+    }
+    if(e.range){
+      const r = f.range||{};
+      if(r.field!==e.range.field || (e.range.min!==undefined&&r.min!==e.range.min) || (e.range.max!==undefined&&r.max!==e.range.max))
+        return `期望 range ${JSON.stringify(e.range)}，实际 ${JSON.stringify(f.range||null)}`;
+    }
+    return null;
+  }
+  function run(){
+    const rows = Store.cleanRows, mart = Store.mart, enums = Store.enumCache;
+    let pass = 0; const fails = [];
+    for(const c of CASES){
+      let spec, res;
+      try{
+        spec = NLU.sanitizeSpec(NLU.ruleParse(c.q, enums), enums);
+        res = QueryEngine.run(spec, rows, mart);
+      }catch(err){ fails.push(`「${c.q}」执行异常：${err.message}`); continue; }
+      const specErr = check(spec, c.e);
+      const mOk = c.m==='pos' ? res.matched>0 : res.matched===0;
+      if(!specErr && mOk) pass++;
+      else fails.push(`「${c.q}」${[specErr, mOk?null:`命中期望${c.m==='pos'?'>0':'=0'}，实际${res.matched}`].filter(Boolean).join('；')}`);
+    }
+    return { pass, total: CASES.length, fails };
+  }
+  return { run, CASES };
+})();
+
+/* =====================================================================
+ * 模块 10 · UI —— 渲染与事件（表格 / 校验报告 / 对话 / 设置 / Toast）
  * =================================================================== */
 const UI = (() => {
   const $ = id => document.getElementById(id);
@@ -1040,6 +1187,7 @@ const UI = (() => {
     $('stFixed').textContent = Store.issues.filter(i=>i.action==='fixed').length;
     $('stRemoved').textContent = Store.issues.filter(i=>i.action==='removed').length;
     $('stClean').textContent = Store.cleanRows.length;
+    $('stArb').textContent = Store.arbCount||0;
   }
 
   /* ---- 对话 ---- */
@@ -1077,6 +1225,7 @@ const UI = (() => {
     Store.mart = null;
     Store.issueFilter = 'all';
     Store.view = 'raw';
+    Store.arbCount = 0;
     Store.tblState = { sortKey:null, sortDir:1, fStore:null, fCat:null };
     Store.pending = Validator.run(raw);   // 预跑规则，仅用于原始表标注，不转正
     // 重置各视图到「待校验」状态
@@ -1086,6 +1235,7 @@ const UI = (() => {
     document.querySelectorAll('.f-chip').forEach(x=>x.classList.toggle('on', x.dataset.f==='all'));
     renderRawTable();
     $('btnValidate').disabled = false;
+    $('btnEval').disabled = true;
     resetChat('数据已更新，对话记录已重置。请先点击「开始校验修复」，完成后即可基于清洗后数据提问。');
     const p = Store.pending;
     toast(`${sourceName}：已载入 ${raw.length} 行，预检出问题 ${p.issues.length} 处（橙色将修正 / 红色将剔除），请点击「开始校验修复」`, 'ok');
@@ -1106,6 +1256,7 @@ const UI = (() => {
     Store.view = 'clean';
     renderStats(); renderIssues(); renderTable();
     $('btnValidate').disabled = true;
+    $('btnEval').disabled = false;
     toast(`校验完成：修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行；预计算已就绪`, 'ok');
   }
 
@@ -1136,6 +1287,12 @@ const UI = (() => {
     $('btnMockLoad').onclick = ()=>loadRaw(MockData.generate(), '模拟数据');
     $('btnMockDl').onclick = ()=>ExcelIO.downloadMock(MockData.generate());
     $('btnValidate').onclick = runValidation;
+    $('btnEval').onclick = ()=>{
+      const r = EvalRunner.run();
+      const pct = Math.round(r.pass/r.total*100);
+      showAlert(`问数评测：通过 ${r.pass}/${r.total}（${pct}%）`,
+        r.fails.length ? r.fails.concat('—— 以上为失败用例，可据此修订规则或 prompt ——') : ['全部用例通过，规则通道表现稳定。']);
+    };
 
     /* 表头排序/筛选（事件委托）+ 筛选弹层外点关闭 */
     $('tableWrap').addEventListener('click', e=>{
