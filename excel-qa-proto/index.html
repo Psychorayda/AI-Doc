@@ -726,19 +726,21 @@ const NLU = (() => {
   const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|quarter|year|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null","quarter":"YYYY-Qn或null","range":{"field":"price|qty|amount","min":数或null,"max":数或null}或null},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null","ratio":"true|false"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
+    const latestOf = mm => (enums.months||[]).filter(x=>x.slice(5,7)===mm).pop();
+    const M08 = latestOf('08')||'2026-08', M07 = latestOf('07')||'2026-07';
     return [
       { role:'system', content:
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；"各年/逐年/按年"→groupBy=year；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；"各年/逐年/按年"→groupBy=year；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到数据中该月份的最近一次出现（通常是最新年份）；数据中没有的年份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
 示例：
-问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":null}
+问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${M08}"},"topN":null,"order":"desc","compare":null}
 问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
 问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc","compare":null}
 问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc","compare":null}
-问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":"mom"}
-问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}","year":null},"topN":null,"order":"desc","compare":null}
+问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${M08}"},"topN":null,"order":"desc","compare":"mom"}
+问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${M07}","year":null},"topN":null,"order":"desc","compare":null}
 问：2024年销售额是多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":"2024"},"topN":null,"order":"desc","compare":null}
 问：现制饮品销售额占比多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":"现制饮品","month":null,"year":null},"topN":null,"order":"desc","compare":null,"ratio":true}
 问：单价30元以上的销量 → {"metric":"qty","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":null,"range":{"field":"price","min":30,"max":null}},"topN":null,"order":"desc","compare":null,"ratio":false}
@@ -855,7 +857,16 @@ const NLU = (() => {
     if(spec.groupBy===null && lastSpec.groupBy && !/(各|每|分别|对比|哪个|前)/.test(q)) spec.groupBy=lastSpec.groupBy;
     return spec;
   }
-  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse, mergeContext };
+  /* —— 月份消歧：用户未给年份时，归一到数据中该月份的最近一次出现（两通道统一执行） —— */
+  function resolveMonth(spec, enums, q){
+    const m = spec.filters && spec.filters.month;
+    if(!m || /20\s*\d\s*\d/.test(q)) return spec;   // 明确给了年份 → 尊重用户
+    const mo = m.slice(5,7);
+    const cands = (enums.months||[]).filter(x=>x.slice(5,7)===mo);
+    if(cands.length) spec.filters.month = cands[cands.length-1];
+    return spec;
+  }
+  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse, mergeContext, resolveMonth };
 })();
 
 /* =====================================================================
@@ -920,8 +931,8 @@ const Chat = (() => {
     const t0 = performance.now();
     const enums = Store.enumCache;
 
-    /* ① 双通道抽参：规则（本地零成本，含追问上下文合并）与 LLM 并行，消毒后结构比对 */
-    const ruleSpec = NLU.mergeContext(NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums), lastSpec, q);
+    /* ① 双通道抽参：规则（本地零成本，含追问上下文合并）与 LLM 并行，消毒+月份消歧后结构比对 */
+    const ruleSpec = NLU.resolveMonth(NLU.mergeContext(NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums), lastSpec, q), enums, q);
     let llmSpec = null;
     if(LLMClient.ready()){
       try{
@@ -936,7 +947,7 @@ const Chat = (() => {
           ], {maxTokens:280, jsonMode:true});
           llmSpec = NLU.parseSpecJSON(fixed);
         }
-        llmSpec = NLU.sanitizeSpec(llmSpec, enums);
+        llmSpec = NLU.resolveMonth(NLU.sanitizeSpec(llmSpec, enums), enums, q);
       }catch(e){ llmSpec = null; }
     }
 
@@ -1029,11 +1040,11 @@ const EvalRunner = (() => {
     { q:'2026年三季度销售额',           e:{quarter:'2026-Q3'},                            m:'pos'  },
     { q:'华东旗舰店7月卖了多少',        e:{store:'华东旗舰店', month:'2026-07'},           m:'pos'  },
     { q:'烘焙点心2025年销量',           e:{category:'烘焙点心', year:'2025', metric:'qty'},m:'pos' },
-    { q:'十二月份有数据吗？',           e:{month:'2026-12'},                              m:'zero' },
+    { q:'十二月份有数据吗？',           e:{month:'2025-12'},                              m:'pos'  },
     { q:'西南锦江店销售额',             e:{store:'西南锦江店'},                            m:'pos'  },
     { q:'各年销售额对比',               e:{groupBy:'year'},                               m:'pos'  },
-    { q:'那8月呢？',                   e:{month:'2026-08'},                              m:'pos', prev:{filters:{month:'2026-07'}} },
-    { q:'那华南天河店呢？',             e:{store:'华南天河店', month:'2026-07'},           m:'pos', prev:{filters:{month:'2026-07'}} }
+    { q:'那8月呢？',                   e:{month:'2026-08'},                              m:'pos', prev:{filters:{month:'2026-07'}}, prevQ:'2026年7月总销售额是多少？' },
+    { q:'那华南天河店呢？',             e:{store:'华南天河店', month:'2026-07'},           m:'pos', prev:{filters:{month:'2026-07'}}, prevQ:'2026年7月总销售额是多少？' }
   ];
   function check(spec, e){
     for(const k of ['metric','agg','groupBy','compare','order']){
@@ -1067,6 +1078,7 @@ const EvalRunner = (() => {
       try{
         spec = NLU.sanitizeSpec(NLU.ruleParse(c.q, enums), enums);
         if(c.prev) spec = NLU.mergeContext(spec, NLU.sanitizeSpec(c.prev, enums), c.q);
+        spec = NLU.resolveMonth(spec, enums, c.q);
         res = QueryEngine.run(spec, rows, mart);
       }catch(err){ fails.push(`「${c.q}」执行异常：${err.message}`); continue; }
         const errMsg = judge(c, spec, res);
@@ -1082,8 +1094,8 @@ const EvalRunner = (() => {
       const c = CASES[i];
       if(onProgress) onProgress(i+1, CASES.length);
       try{
-        const raw = await LLMClient.chat(NLU.buildExtractPrompt(c.q, null, enums), {maxTokens:280, jsonMode:true});
-        const spec = NLU.sanitizeSpec(NLU.parseSpecJSON(raw), enums);
+        const raw = await LLMClient.chat(NLU.buildExtractPrompt(c.q, c.prevQ||null, enums), {maxTokens:280, jsonMode:true});
+        const spec = NLU.resolveMonth(NLU.sanitizeSpec(NLU.parseSpecJSON(raw), enums), enums, c.q);
         const res = QueryEngine.run(spec, rows, mart);
         const errMsg = judge(c, spec, res);
         if(errMsg) fails.push(errMsg); else pass++;
