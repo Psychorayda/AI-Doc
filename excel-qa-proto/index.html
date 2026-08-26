@@ -7,6 +7,36 @@
 <!-- SheetJS：Excel 解析/生成（唯一外部依赖；问数本身即需联网调 LLM） -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="./styles/main.css">
+<script>
+/* 启动看护：模块加载失败（如 file:// 直开、缓存旧文件、路径 404）时给出可见提示，
+   避免“页面无声死掉、点击无反应”。此脚本为 classic script，不依赖模块体系。 */
+(function(){
+  function banner(msg){
+    if(document.getElementById('bootErr'))return;
+    var d=document.createElement('div');
+    d.id='bootErr';
+    d.style.cssText='position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9999;max-width:82%;padding:12px 18px;border-radius:10px;background:#7f1d1d;color:#fff;font-size:13px;line-height:1.7;box-shadow:0 8px 30px rgba(0,0,0,.35);white-space:pre-wrap';
+    d.textContent=msg;
+    (document.body||document.documentElement).appendChild(d);
+  }
+  window.addEventListener('error',function(e){
+    var src=(e.target&&(e.target.src||e.target.href))||e.filename||'';
+    if(src||e.message){
+      banner('页面脚本加载/执行失败，交互已失效。\n'+(e.message||'')+(src?'\n资源: '+src:'')+'\n\n请确认：① 通过 http 服务访问（不要用 file:// 直接双击打开）② 强制刷新（Ctrl+Shift+R）清除旧缓存。');
+    }
+  },true);
+  window.addEventListener('unhandledrejection',function(e){
+    banner('脚本执行异常：'+((e.reason&&e.reason.message)||e.reason||'未知错误')+'\n请强制刷新（Ctrl+Shift+R）；若仍存在，请查看控制台报错。');
+  });
+  window.addEventListener('DOMContentLoaded',function(){
+    setTimeout(function(){
+      if(!window.__BOOTED){
+        banner('页面初始化未完成（src/ui/main.js 未成功执行）。\n最常见原因：① 使用 file:// 直接打开——ES Module 会被浏览器拦截，请改用本地 http 服务（如 python3 -m http.server）访问；② 浏览器缓存了重构前的旧文件，请强制刷新（Ctrl+Shift+R）。');
+      }
+    },2500);
+  });
+})();
+</script>
 </head>
 <body>
 

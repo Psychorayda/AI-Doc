@@ -120,3 +120,4 @@ function bind(){
 }
 
 bind();
+window.__BOOTED = true;   // 启动看护标志：index.html 内联脚本据此判断模块图是否成功执行
