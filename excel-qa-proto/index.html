@@ -676,10 +676,18 @@ const QueryEngine = (() => {
     return { type:'scalar', metric, agg, value:round(aggregate(r,metric,agg)), matched:r.length,
       month: f.month||null };
   }
+  /* 数据范围注记：问题未限定时间时强制附上（renderLocal 通道，返回无括号文本由调用方拼接） */
+  function rangeNote(spec, mart){
+    const f = spec.filters||{};
+    if(f.month || f.year || f.quarter || !mart) return '';
+    const ks = Object.keys(mart.month).sort();
+    return ks.length ? `数据范围：${ks[0]} ~ ${ks[ks.length-1]}` : '';
+  }
   /* 本地模板化回答（LLM 不可用时的兜底输出） */
   function renderLocal(spec, res, mart){
     const mName = METRIC_NAME[res.metric], aName = AGG_NAME[res.agg]||'';
     const f = spec.filters||{};
+    const note = rangeNote(spec, mart);
     const scope = [f.month, f.year, f.quarter, f.store, f.category,
       f.range?`${RANGE_NAME[f.range.field]}${f.range.min!==undefined?'≥'+f.range.min:''}${f.range.max!==undefined?'≤'+f.range.max:''}`:null
     ].filter(Boolean).join('·') || '全部数据';
@@ -687,7 +695,7 @@ const QueryEngine = (() => {
       const unit = res.metric==='qty' ? ' 件' : ' 元';
       if(!res.scopeN) return '当前时间范围内没有数据，无法计算占比。';
       if(!res.matched) return `「${res.label}」在该范围内没有匹配记录，占比为 0%。`;
-      return `${res.label}的${METRIC_NAME[res.metric]}为 ${res.part.toLocaleString()}${unit}，占${f.month||f.year||f.quarter||'全部'}总量 ${res.whole.toLocaleString()}${unit} 的 ${res.pct}%（命中 ${res.matched} 条）。`;
+      return `${res.label}的${METRIC_NAME[res.metric]}为 ${res.part.toLocaleString()}${unit}，占${f.month||f.year||f.quarter||'全部'}总量 ${res.whole.toLocaleString()}${unit} 的 ${res.pct}%（命中 ${res.matched} 条${note?'，'+note:''}）。`;
     }
     if(res.type==='compare'){
       const label = res.compare==='mom' ? '环比' : '同比';
@@ -697,11 +705,11 @@ const QueryEngine = (() => {
       const dir = res.delta>=0 ? '增长' : '下降';
       return `${res.month} ${METRIC_NAME[res.metric]}为 ${res.cur.toLocaleString()}${unit}，${label}（对比 ${res.refMonth}）${dir} ${Math.abs(res.delta).toLocaleString()}${unit}，${dir}幅 ${Math.abs(res.pct)}%。`;
     }
-    if(res.matched===0) return `在「${scope}」范围内没有匹配的数据记录。`;
+    if(res.matched===0) return `在「${scope}」范围内没有匹配的数据记录${note?'（'+note+'）':''}。`;
     if(res.type==='scalar'){
       let base = res.agg==='count'
-        ? `${scope}共有 ${res.value} 条记录。`
-        : `${scope}的${aName}${mName}为 ${res.value.toLocaleString()}${res.metric==='qty'?' 件':res.metric==='amount'?' 元':''}（基于 ${res.matched} 条记录）。`;
+        ? `${scope}共有 ${res.value} 条记录${note?'（'+note+'）':''}。`
+        : `${scope}的${aName}${mName}为 ${res.value.toLocaleString()}${res.metric==='qty'?' 件':res.metric==='amount'?' 元':''}（基于 ${res.matched} 条记录${note?'，'+note:''}）。`;
       /* 月度标量查询附赠 Mart 预计算的环比信息 */
       if(res.month && mart && mart.monthCmp[res.month] && mart.monthCmp[res.month].mom){
         const c = mart.monthCmp[res.month].mom;
@@ -712,7 +720,7 @@ const QueryEngine = (() => {
     }
     const unit = res.metric==='qty'?' 件':res.metric==='amount'?' 元':'';
     const lines = res.rows.map((x,i)=>`${i+1}. ${x.key}：${x.value.toLocaleString()}${unit}（${x.n}条）`);
-    return `按${GROUP_NAME[res.groupBy]}统计的${aName}${mName}（${scope}）：\n${lines.join('\n')}`;
+    return `按${GROUP_NAME[res.groupBy]}统计的${aName}${mName}（${scope}${note?'，'+note:''}）：\n${lines.join('\n')}`;
   }
   return { run, renderLocal };
 })();
@@ -733,12 +741,13 @@ const NLU = (() => {
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；"各年/逐年/按年"→groupBy=year；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到数据中该月份的最近一次出现（通常是最新年份）；数据中没有的年份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null, ratio=false；问法出现"销量/件数/多少件"时 metric=qty（即使同时提到销售额相关字眼，以销量为准）；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；"各年/逐年/按年"→groupBy=year；含"占比/比例"→ratio=true 且提取对应维度过滤；"X以上/超过/大于"→range.min，"X以下/以内"→range.max；"Q3/三季度/第3季度"→filters.quarter；只有年份没有月份→填 year；月份缺少年份→映射到数据中该月份的最近一次出现（通常是最新年份）；数据中没有的年份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
 示例：
 问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${M08}"},"topN":null,"order":"desc","compare":null}
 问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
 问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc","compare":null}
 问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc","compare":null}
+问：销量最高的前三个品类 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"desc","compare":null}
 问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${M08}"},"topN":null,"order":"desc","compare":"mom"}
 问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${M07}","year":null},"topN":null,"order":"desc","compare":null}
 问：2024年销售额是多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":"2024"},"topN":null,"order":"desc","compare":null}
@@ -866,7 +875,24 @@ const NLU = (() => {
     if(cands.length) spec.filters.month = cands[cands.length-1];
     return spec;
   }
-  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse, mergeContext, resolveMonth };
+  /* —— 模糊问数检测：无指标/维度/过滤/聚合任何信号 → 走预设模板，不消耗 token —— */
+  function isVague(q, spec){
+    if(spec.groupBy || spec.compare || spec.ratio || spec.topN) return false;
+    const f = spec.filters||{};
+    if(f.month || f.year || f.quarter || f.store || f.category || f.range) return false;
+    return !/(销售额|销量|单价|数量|多少|几|最高|最低|平均|对比|趋势|占比|比例|记录|排行)/.test(q);
+  }
+  function vagueReply(enums){
+    const range = enums.months && enums.months.length ? `${enums.months[0]} ~ ${enums.months[enums.months.length-1]}` : '';
+    return `这个问题有点宽泛，我不确定你想看什么。可以按这些方向问（数据范围：${range}）：\n`+
+      `· 汇总：「八月份总销售额是多少？」\n`+
+      `· 排行：「哪个门店销售额最高？」「销量前三的品类」\n`+
+      `· 对比：「各品类销量对比」「各年销售额对比」\n`+
+      `· 占比/阈值：「现制饮品占比多少？」「单价30以上的销量」\n`+
+      `· 趋势：「各月销售额趋势」「8月环比增长多少？」\n`+
+      `也可以直接点击下方问数方向提示。`;
+  }
+  return { buildExtractPrompt, parseSpecJSON, sanitizeSpec, ruleParse, mergeContext, resolveMonth, isVague, vagueReply };
 })();
 
 /* =====================================================================
@@ -933,6 +959,13 @@ const Chat = (() => {
 
     /* ① 双通道抽参：规则（本地零成本，含追问上下文合并）与 LLM 并行，消毒+月份消歧后结构比对 */
     const ruleSpec = NLU.resolveMonth(NLU.mergeContext(NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums), lastSpec, q), enums, q);
+    /* 模糊问数：直接回预设模板（零成本、不猜 spec） */
+    if(NLU.isVague(q, ruleSpec)){
+      thinking.remove();
+      UI.addMsg('ai', NLU.vagueReply(enums), false, '预设模板 · 0ms');
+      lastUserQ = q;
+      return;
+    }
     let llmSpec = null;
     if(LLMClient.ready()){
       try{
@@ -980,8 +1013,9 @@ const Chat = (() => {
     if(llmSpec){
       try{
         const mem = Store.chat.slice(-4);
+        const dr = enums.months && enums.months.length ? `${enums.months[0]} ~ ${enums.months[enums.months.length-1]}` : '';
         answer = await LLMClient.chat([
-          { role:'system', content:'你是数据分析助手。根据给定查询结果，用简体中文简洁回答（≤100字），列出关键数字，不要编造结果之外的数据。' },
+          { role:'system', content:`你是数据分析助手。根据给定查询结果，用简体中文简洁回答（≤100字），列出关键数字，不要编造结果之外的数据。硬性要求：若问题未限定时间范围，回答必须注明数据时间范围（${dr}）；若问题已限定时间，回答中也要带上该时间。` },
           ...mem,
           { role:'user', content:`问题：${q}\n查询结果(JSON)：${brief}` }
         ], {maxTokens:220});
