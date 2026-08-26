@@ -106,11 +106,19 @@ main{flex:1;display:grid;min-height:0;gap:14px;padding:14px;
 /* ================= 表格 ================= */
 .table-wrap{flex:1;overflow:auto;min-height:0}
 table{border-collapse:collapse;width:100%;font-size:13px}
-thead th{position:sticky;top:0;background:#f4f8f6;color:#33504a;font-weight:600;text-align:left;
-  padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;z-index:2;font-size:12px}
+thead th{position:sticky;top:0;background:#f4f8f6;color:#33504a;font-weight:600;text-align:center;font-family:inherit;
+  padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;z-index:2;font-size:12px;letter-spacing:.02em;user-select:none}
 tbody td{padding:8px 12px;border-bottom:1px solid #eef2f0;white-space:nowrap}
 tbody tr:hover{background:#f6faf8}
-td.num,th.num{text-align:right;font-family:var(--mono)}
+td.num{text-align:right;font-family:var(--mono)}
+th.sortable{cursor:pointer}
+th.sortable:hover{color:var(--primary);background:#ecf4f1}
+th .arr{font-size:9px;margin-left:3px;color:var(--primary)}
+th .funnel{margin-left:4px;vertical-align:-1px;cursor:pointer;color:#9db5b0}
+th .funnel.on{color:var(--primary)}
+#colFilter{position:fixed;z-index:80;background:#fff;border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--sh-lg);padding:10px 12px;width:200px;display:none}
+#colFilter .opt{display:flex;gap:7px;align-items:center;font-size:12px;padding:4px 2px;cursor:pointer;color:var(--text)}
+#colFilter .foot{display:flex;gap:6px;margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
 td.mk-fix{background:#fdf3e7;color:#92400e;cursor:help}
 td.mk-del{background:#fdecec;color:#991b1b;cursor:help}
 .legend{display:flex;gap:14px;font-size:11px;color:var(--text-sub);padding:7px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:#fff;z-index:3;align-items:center}
@@ -230,7 +238,7 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
   <section class="panel">
     <div class="panel-head">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
-      修复后数据表单 <span class="tag" id="tblTag">模块 ②</span>
+      <span id="tblTitle">数据表单</span> <span class="tag" id="tblTag">模块 ②</span>
     </div>
     <div class="table-wrap" id="tableWrap">
       <div class="empty" style="padding-top:90px">
@@ -296,6 +304,7 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
   </div>
 </div>
 
+<div id="colFilter"></div>
 <div id="toasts"></div>
 
 <script>
@@ -310,6 +319,8 @@ const Store = {
   pending: null,      // 载入时预跑的校验结果 {clean, issues}，供原始表标注；点击「开始校验修复」后转正
   mart: null,         // 修复后数据的预计算标准化结构
   issueFilter: 'all',
+  view: 'none',       // 当前中栏视图：'raw' | 'clean'
+  tblState: { sortKey:null, sortDir:1, fStore:null, fCat:null },  // 表头排序/筛选状态
   chat: [],           // 多轮记忆 {role, content}
   enumCache: null     // 供 LLM 抽参的枚举值（门店/品类/月份）
 };
@@ -324,18 +335,22 @@ const MockData = (() => {
   const rnd = (a,b)=>a+Math.random()*(b-a);
   const pick = a=>a[Math.floor(Math.random()*a.length)];
   const pad = n=>String(n).padStart(2,'0');
+  /* 跨年日期：2025-06-01 ~ 2026-08-18 均匀分布 */
+  const T0 = new Date(2025,5,1).getTime(), T1 = new Date(2026,7,18).getTime();
+  function randDate(){
+    const d = new Date(T0 + Math.random()*(T1-T0));
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  }
 
   function generate(){
     const rows = [];
     let id = 1;
-    // ---- 正常数据 ~110 行 ----
-    for(let i=0;i<110;i++){
+    // ---- 正常数据 ~220 行（跨年） ----
+    for(let i=0;i<220;i++){
       const [cat,pmin,pmax] = pick(CATS);
       const price = Math.round(rnd(pmin,pmax)*2)/2;
       const qty = Math.round(rnd(1,18));
-      const m = pick([6,7,8]), dMax = m===8?18:30;
-      const date = `2026-${pad(m)}-${pad(Math.ceil(rnd(0,dMax)))}`;
-      rows.push({ id:id++, date, store:pick(STORES), category:cat, price, qty, amount:Math.round(price*qty*100)/100 });
+      rows.push({ id:id++, date:randDate(), store:pick(STORES), category:cat, price, qty, amount:Math.round(price*qty*100)/100 });
     }
     // ---- 注入错误（覆盖 5 类校验规则） ----
     const bad = [
@@ -356,7 +371,7 @@ const MockData = (() => {
     ];
     bad.forEach(b=>{
       const [cat,pmin,pmax] = pick(CATS);
-      const r = { id:id++, date:`2026-${pad(pick([6,7,8]))}-${pad(Math.ceil(rnd(0,28)))}`,
+      const r = { id:id++, date:randDate(),
         store:pick(STORES), category:cat,
         price:Math.round(rnd(pmin,pmax)*2)/2, qty:Math.round(rnd(1,15)) };
       r.amount = Math.round((Number(r.price)||20)*(Number(r.qty)||5)*100)/100;
@@ -624,6 +639,7 @@ const QueryEngine = (() => {
     if(f.store)   r = r.filter(x=>x.store.includes(f.store));
     if(f.category)r = r.filter(x=>x.category.includes(f.category));
     if(f.month)   r = r.filter(x=>x.date.startsWith(f.month));
+    else if(f.year) r = r.filter(x=>x.date.startsWith(f.year));
     const metric = spec.metric||'amount', agg = spec.agg||'sum';
     if(spec.groupBy){
       const g = {};
@@ -640,7 +656,7 @@ const QueryEngine = (() => {
   function renderLocal(spec, res, mart){
     const mName = METRIC_NAME[res.metric], aName = AGG_NAME[res.agg]||'';
     const f = spec.filters||{};
-    const scope = [f.month, f.store, f.category].filter(Boolean).join('·') || '全部数据';
+    const scope = [f.month, f.year, f.store, f.category].filter(Boolean).join('·') || '全部数据';
     if(res.type==='compare'){
       const label = res.compare==='mom' ? '环比' : '同比';
       const unit = res.metric==='qty' ? ' 件' : ' 元';
@@ -675,7 +691,7 @@ const QueryEngine = (() => {
  *  B. 规则引擎（兜底，保证永不无响应）
  * =================================================================== */
 const NLU = (() => {
-  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null"},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null"}`;
+  const SPEC_HINT = `{"metric":"amount|qty|price","agg":"sum|avg|max|min|count","groupBy":"store|category|month|null","filters":{"store":"门店名或null","category":"品类名或null","month":"YYYY-MM或null","year":"YYYY或null"},"topN":"数字或null","order":"desc|asc","compare":"mom|yoy|null"}`;
 
   function buildExtractPrompt(q, lastQ, enums){
     return [
@@ -683,14 +699,15 @@ const NLU = (() => {
 `你是查询参数提取器。数据字段：date(日期), store(门店), category(品类), price(单价元), qty(数量件), amount(销售额元)。
 门店枚举：${enums.stores.join('/')}；品类枚举：${enums.cats.join('/')}；数据覆盖月份：${(enums.months||[]).join('、')}（用户未给年份时按此范围映射）。
 把问题转成 JSON，结构：${SPEC_HINT}。
-规则：默认 metric=amount, agg=sum, order=desc, compare=null；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；无法确定的字段填 null。只输出 JSON。
+规则：默认 metric=amount, agg=sum, order=desc, compare=null；"各/每/分别/对比/哪个/前几"→设置 groupBy；"最高/最多/第一"→order=desc 且 topN=1；"最低/最少"→order=asc；"平均"→agg=avg；"多少条/几笔"→agg=count；含"环比"→compare=mom 且提取 month；含"同比"→compare=yoy 且提取 month；只有年份没有月份→填 year 而非 month；月份缺少年份→映射到覆盖范围内最近年份；数据中没有的年份/月份照实填写（查询层会如实返回0条）；无法确定的字段填 null。只输出 JSON。
 示例：
 问：八月份总销售额 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":null}
 问：哪个门店销售额最高 → {"metric":"amount","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":1,"order":"desc","compare":null}
 问：各品类销量分别是多少 → {"metric":"qty","agg":"sum","groupBy":"category","filters":{"store":null,"category":null,"month":null},"topN":null,"order":"desc","compare":null}
 问：销量最低的三个门店 → {"metric":"qty","agg":"sum","groupBy":"store","filters":{"store":null,"category":null,"month":null},"topN":3,"order":"asc","compare":null}
 问：8月销售额环比增长多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":"${(enums.months&&enums.months[2])||'2026-08'}"},"topN":null,"order":"desc","compare":"mom"}
-问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}"},"topN":null,"order":"desc","compare":null}` },
+问：7月华东旗舰店烘焙点心卖了多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":"华东旗舰店","category":"烘焙点心","month":"${(enums.months&&enums.months[1])||'2026-07'}","year":null},"topN":null,"order":"desc","compare":null}
+问：2024年销售额是多少 → {"metric":"amount","agg":"sum","groupBy":null,"filters":{"store":null,"category":null,"month":null,"year":"2024"},"topN":null,"order":"desc","compare":null}` },
       ...(lastQ ? [{ role:'user', content:`上一轮问题：${lastQ}\n当前问题（可能省略了条件，请结合上一轮补全）：${q}` }] : [{ role:'user', content:q }])
     ];
   }
@@ -713,6 +730,7 @@ const NLU = (() => {
       const st=matchEnum(f.store,enums.stores); if(st) spec.filters.store=st;
       const ct=matchEnum(f.category,enums.cats); if(ct) spec.filters.category=ct;
       const mm=String(f.month||'').match(/(20\d{2})\D?(\d{1,2})/); if(mm) spec.filters.month=`${mm[1]}-${mm[2].padStart(2,'0')}`;
+      const yy=String(f.year||'').match(/(20\d{2})/); if(yy && !spec.filters.month) spec.filters.year=yy[1];
       if(+s.topN>0) spec.topN=Math.min(20,Math.round(+s.topN));
       if(s.order==='asc') spec.order='asc';
       if(['mom','yoy'].includes(s.compare)) spec.compare=s.compare;
@@ -742,11 +760,13 @@ const NLU = (() => {
     enums.cats.forEach(c=>{ if(q.includes(c)||q.includes(c.replace(/^现制|^轻食|^周边/,''))) spec.filters.category=c; });
     const CNM = {'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12};
     const toMonth = s => /^\d+$/.test(s) ? +s : CNM[s];
+    const defYear = (enums.months && enums.months.length) ? enums.months[enums.months.length-1].slice(0,4) : '2026';
     const ym = q.match(/(20\d{2})\s*年?\s*(\d{1,2})\s*月/) || q.match(/(20\d{2})\s*年\s*(十一|十二|[一二两三四五六七八九十])\s*月/);
     if(ym) spec.filters.month = `${ym[1]}-${String(toMonth(ym[2])).padStart(2,'0')}`;
     else {
       const mm = q.match(/(\d{1,2})\s*月/) || q.match(/(十一|十二|[一二两三四五六七八九十])\s*月/);
-      if(mm) spec.filters.month = `2026-${String(toMonth(mm[1])).padStart(2,'0')}`;
+      if(mm) spec.filters.month = `${defYear}-${String(toMonth(mm[1])).padStart(2,'0')}`;
+      else { const yy = q.match(/(20\d{2})\s*年/); if(yy) spec.filters.year = yy[1]; }  // 仅年份
     }
     if(/环比/.test(q)) spec.compare='mom';
     else if(/同比/.test(q)) spec.compare='yoy';
@@ -915,6 +935,57 @@ const UI = (() => {
       </div>`).join('') || '<div class="empty">该分类下无记录</div>';
   }
 
+  /* ---- 表头构建：可排序列（日期/单价/数量/销售额）+ 可筛选列（门店/品类） ---- */
+  function headHtml(){
+    const t = Store.tblState;
+    const arrow = k => t.sortKey===k ? `<span class="arr">${t.sortDir>0?'▲':'▼'}</span>` : '';
+    const funnel = (k,on) => `<svg class="funnel${on?' on':''}" data-filter="${k}" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
+    return `<thead><tr><th>#</th>
+      <th class="sortable" data-sort="date">日期${arrow('date')}</th>
+      <th>门店${funnel('store',t.fStore)}</th>
+      <th>品类${funnel('category',t.fCat)}</th>
+      <th class="sortable" data-sort="price">单价(元)${arrow('price')}</th>
+      <th class="sortable" data-sort="qty">数量(件)${arrow('qty')}</th>
+      <th class="sortable" data-sort="amount">销售额(元)${arrow('amount')}</th></tr></thead>`;
+  }
+  /* 应用筛选 + 排序 */
+  function tblRows(rows){
+    const t = Store.tblState;
+    let out = rows.filter(r=> (!t.fStore || t.fStore.has(String(r.store??'(空)'))) && (!t.fCat || t.fCat.has(String(r.category??'(空)'))) );
+    if(t.sortKey){
+      const k = t.sortKey, d = t.sortDir;
+      out = out.slice().sort((a,b)=>{
+        const na = parseFloat(a[k]), nb = parseFloat(b[k]);
+        if(!isNaN(na) && !isNaN(nb)) return (na-nb)*d;
+        return String(a[k]??'').localeCompare(String(b[k]??''))*d;
+      });
+    }
+    return out;
+  }
+  function renderCurrentTable(){ Store.view==='clean' ? renderTable() : renderRawTable(); }
+
+  /* 列筛选弹层 */
+  function openColFilter(kind, anchor){
+    const pop = $('colFilter');
+    const key = kind==='store' ? 'fStore' : 'fCat';
+    const rows = Store.view==='clean' ? Store.cleanRows : Store.rawRows;
+    const values = [...new Set(rows.map(r=>String(r[kind]??'(空)')))].sort();
+    const cur = Store.tblState[key];
+    pop.innerHTML = `<div style="font-size:12px;color:var(--text-sub);margin-bottom:6px">筛选「${kind==='store'?'门店':'品类'}」</div>` +
+      values.map(v=>`<label class="opt"><input type="checkbox" value="${v}" ${(!cur||cur.has(v))?'checked':''}>${v}</label>`).join('') +
+      `<div class="foot"><button class="btn primary sm" data-act="ok">确定</button><button class="btn sm" data-act="reset">重置</button></div>`;
+    const rc = anchor.getBoundingClientRect();
+    pop.style.display = 'block';
+    pop.style.top = Math.min(rc.bottom+4, innerHeight-pop.offsetHeight-10)+'px';
+    pop.style.left = Math.min(rc.left, innerWidth-210)+'px';
+    pop.querySelector('[data-act="ok"]').onclick = ()=>{
+      const checked = [...pop.querySelectorAll('input:checked')].map(i=>i.value);
+      Store.tblState[key] = checked.length===values.length ? null : new Set(checked);
+      pop.style.display = 'none'; renderCurrentTable();
+    };
+    pop.querySelector('[data-act="reset"]').onclick = ()=>{ Store.tblState[key]=null; pop.style.display='none'; renderCurrentTable(); };
+  }
+
   /* ---- 原始数据表（标注模式：橙色=将修正，红色=将剔除，悬浮查看规则与处置） ---- */
   const COLS = [['date','日期'],['store','门店'],['category','品类'],['price','单价'],['qty','数量'],['amount','销售额']];
   function renderRawTable(){
@@ -925,11 +996,11 @@ const UI = (() => {
     w.innerHTML = `<div class="legend">
         <span><i style="background:#f3d9ae"></i>将修正</span>
         <span><i style="background:#f3b8b8"></i>将剔除</span>
-        <span style="margin-left:auto">悬浮彩色单元格查看原因 · 共 ${Store.rawRows.length} 行</span>
+        <span style="margin-left:auto">悬浮彩色单元格查看原因 · 点击表头可排序/筛选 · 共 ${Store.rawRows.length} 行</span>
       </div>
       <table>
-      <thead><tr><th>#</th>${COLS.map(c=>`<th${['price','qty','amount','date'].includes(c[0])?' class="num"':''}>${c[1]}</th>`).join('')}</tr></thead>
-      <tbody>${Store.rawRows.map(r=>{
+      ${headHtml()}
+      <tbody>${tblRows(Store.rawRows).map(r=>{
         const del = mark[r.id] && Object.values(mark[r.id]).some(i=>i.action==='removed');
         return `<tr${del?' style="opacity:.62"':''}><td style="color:var(--text-sub)">${r.id}</td>` +
           COLS.map(([k])=>{
@@ -942,22 +1013,24 @@ const UI = (() => {
       }).join('')}</tbody>
       <tfoot><tr><td colspan="7">原始数据预览（含标注）· 点击左侧「开始校验修复」生成清洗后表单</td></tr></tfoot>
     </table>`;
-    $('tblTag').textContent = `模块 ② · 原始数据（待校验）`;
+    $('tblTitle').textContent = '修复前数据表单';
+    $('tblTag').textContent = `模块 ② · 原始数据 ${Store.rawRows.length} 行`;
   }
   function renderTable(){
     const w = $('tableWrap');
     if(!Store.cleanRows.length){ return; }
-    const rows = Store.cleanRows.slice(0,200);
+    const all = tblRows(Store.cleanRows);
+    const rows = all.slice(0,200);
     w.innerHTML = `<table>
-      <thead><tr><th>#</th><th>日期</th><th>门店</th><th>品类</th>
-        <th class="num">单价(元)</th><th class="num">数量(件)</th><th class="num">销售额(元)</th></tr></thead>
+      ${headHtml()}
       <tbody>${rows.map(r=>`<tr>
         <td style="color:var(--text-sub)">${r.id}</td><td class="num">${r.date}</td>
         <td>${r.store}</td><td>${r.category}</td>
         <td class="num">${r.price.toFixed(1)}</td><td class="num">${r.qty}</td>
         <td class="num">${r.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><td colspan="7">共 ${Store.cleanRows.length} 行${Store.cleanRows.length>200?'（预览前 200 行）':''} · 问数基于全量清洗后数据</td></tr></tfoot>
+      <tfoot><tr><td colspan="7">显示 ${rows.length} / ${all.length} 行${Store.cleanRows.length>all.length?'（已筛选）':all.length>200?'（预览前 200 行）':''} · 问数基于全量清洗后数据</td></tr></tfoot>
     </table>`;
+    $('tblTitle').textContent = '修复后数据表单';
     $('tblTag').textContent = `模块 ② · ${Store.cleanRows.length} 行`;
   }
 
@@ -1003,6 +1076,8 @@ const UI = (() => {
     Store.enumCache = null;
     Store.mart = null;
     Store.issueFilter = 'all';
+    Store.view = 'raw';
+    Store.tblState = { sortKey:null, sortDir:1, fStore:null, fCat:null };
     Store.pending = Validator.run(raw);   // 预跑规则，仅用于原始表标注，不转正
     // 重置各视图到「待校验」状态
     $('stats').style.display = 'none';
@@ -1028,6 +1103,7 @@ const UI = (() => {
       months: [...new Set(clean.map(r=>r.date.slice(0,7)))].sort()
     };
     Store.mart = Mart.build(clean);   // 预计算标准化结构：月/季/年聚合、维度排行、环比同比
+    Store.view = 'clean';
     renderStats(); renderIssues(); renderTable();
     $('btnValidate').disabled = true;
     toast(`校验完成：修正 ${issues.filter(i=>i.action==='fixed').length} 处，剔除 ${issues.filter(i=>i.action==='removed').length} 行，保留 ${clean.length} 行；预计算已就绪`, 'ok');
@@ -1060,6 +1136,24 @@ const UI = (() => {
     $('btnMockLoad').onclick = ()=>loadRaw(MockData.generate(), '模拟数据');
     $('btnMockDl').onclick = ()=>ExcelIO.downloadMock(MockData.generate());
     $('btnValidate').onclick = runValidation;
+
+    /* 表头排序/筛选（事件委托）+ 筛选弹层外点关闭 */
+    $('tableWrap').addEventListener('click', e=>{
+      const s = e.target.closest('[data-sort]');
+      if(s){
+        const k = s.dataset.sort, t = Store.tblState;
+        if(t.sortKey!==k){ t.sortKey=k; t.sortDir=1; }
+        else if(t.sortDir===1){ t.sortDir=-1; }
+        else { t.sortKey=null; }
+        renderCurrentTable(); return;
+      }
+      const f = e.target.closest('[data-filter]');
+      if(f){ e.stopPropagation(); openColFilter(f.dataset.filter, f); }
+    });
+    document.addEventListener('click', e=>{
+      const pop = $('colFilter');
+      if(pop.style.display==='block' && !e.target.closest('#colFilter') && !e.target.closest('[data-filter]')) pop.style.display='none';
+    });
 
     document.querySelectorAll('.f-chip').forEach(b=>b.onclick = ()=>{
       document.querySelectorAll('.f-chip').forEach(x=>x.classList.remove('on'));
