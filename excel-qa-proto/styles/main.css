@@ -160,11 +160,12 @@ tfoot td{padding:8px 12px;font-size:12px;color:var(--text-sub);background:#fbfdf
 .toast.ok{background:var(--primary)}
 
 @media (max-width:1180px){
-  main{grid-template-columns:1fr;grid-template-rows:none;grid-template-areas:"pipe" "table" "chat";overflow:auto}
   body{overflow:auto}
-  .panel{max-height:none}
-  .panel:nth-child(3){min-height:420px}
+  main{display:flex;flex-direction:column;overflow:visible}
+  .panel{flex:none;max-height:none}
+  .panel:nth-child(2){height:620px}
+  .panel:nth-child(3){height:440px}
   .tbl-area{flex-direction:column}
-  .table-wrap{min-height:340px}
-  .side-rail{width:auto;border-left:none;border-top:1px solid var(--border)}
+  .table-wrap{flex:1 1 55%;min-height:220px}
+  .side-rail{flex:1 1 45%;width:auto;min-height:0;border-left:none;border-top:1px solid var(--border)}
 }
