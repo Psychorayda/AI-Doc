@@ -62,14 +62,20 @@ export function renderRawTable(){
   const issues = Store.pending ? Store.pending.issues : [];
   const mark = {};
   issues.forEach(i=>{ (mark[i.rowId]=mark[i.rowId]||{})[i.field]=i; });
+  let rows = tblRows(Store.rawRows);
+  /* 问题行默认置顶（剔除优先于修正），用户点击表头排序后按用户排序展示 */
+  if(!Store.tblState.sortKey){
+    const rank = r => { const m = mark[r.id]; if(!m) return 2; return Object.values(m).some(i=>i.action==='removed') ? 0 : 1; };
+    rows = rows.slice().sort((a,b)=>rank(a)-rank(b));
+  }
   w.innerHTML = `<div class="legend">
       <span><i style="background:#f3d9ae"></i>将修正</span>
       <span><i style="background:#f3b8b8"></i>将剔除</span>
-      <span style="margin-left:auto">悬浮彩色单元格查看原因 · 点击表头可排序/筛选 · 共 ${Store.rawRows.length} 行</span>
+      <span style="margin-left:auto">问题行已置顶 · 悬浮彩色单元格查看原因 · 点击表头可排序/筛选 · 共 ${Store.rawRows.length} 行</span>
     </div>
     <table>
     ${headHtml()}
-    <tbody>${tblRows(Store.rawRows).map(r=>{
+    <tbody>${rows.map(r=>{
       const del = mark[r.id] && Object.values(mark[r.id]).some(i=>i.action==='removed');
       return `<tr${del?' style="opacity:.62"':''}><td style="color:var(--text-sub)">${r.id}</td>` +
         COLS.map(([k])=>{
