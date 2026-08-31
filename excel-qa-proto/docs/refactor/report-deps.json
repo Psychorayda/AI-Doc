@@ -1,0 +1,54 @@
+{
+  "core/config.js": [],
+  "core/store.js": [],
+  "data/excel.js": [],
+  "data/mart.js": [],
+  "data/mock.js": [],
+  "data/validator.js": [],
+  "qa/chat.js": [
+    "qa/nlu.js",
+    "qa/query.js"
+  ],
+  "qa/eval.js": [
+    "qa/nlu.js",
+    "qa/query.js"
+  ],
+  "qa/llm.js": [
+    "core/config.js"
+  ],
+  "qa/nlu.js": [],
+  "qa/query.js": [
+    "data/mart.js"
+  ],
+  "ui/chatview.js": [
+    "ui/dom.js"
+  ],
+  "ui/dom.js": [],
+  "ui/issues.js": [
+    "core/store.js",
+    "ui/dom.js"
+  ],
+  "ui/main.js": [
+    "core/store.js",
+    "data/excel.js",
+    "data/mart.js",
+    "data/mock.js",
+    "data/validator.js",
+    "qa/chat.js",
+    "qa/eval.js",
+    "qa/llm.js",
+    "ui/chatview.js",
+    "ui/dom.js",
+    "ui/issues.js",
+    "ui/settings.js",
+    "ui/table.js"
+  ],
+  "ui/settings.js": [
+    "core/store.js",
+    "ui/dom.js"
+  ],
+  "ui/table.js": [
+    "core/store.js",
+    "ui/dom.js"
+  ]
+}

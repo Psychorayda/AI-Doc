@@ -2,11 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createEvalRunner } from '../src/qa/eval.js';
-import { makeEnv, makeStore } from './helpers.js';
+import { makeEnv, makeStore, makeNQ, retailCases } from './helpers.js';
 
 test('EvalRunner 黄金集（规则通道）全过', () => {
   const env = makeEnv();
-  const runner = createEvalRunner({ store: makeStore(env), llm: null });
+  const { nlu, query } = makeNQ();
+  const runner = createEvalRunner({ store: makeStore(env), llm: null, nlu, query, cases: retailCases });
   const r = runner.run();
   if(r.fails.length) console.error(r.fails.join('\n'));
   assert.equal(r.pass, r.total, `${r.pass}/${r.total}`);
