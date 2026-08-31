@@ -3,13 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Validator } from '../src/data/validator.js';
 import { Mart } from '../src/data/mart.js';
-import { ExcelIO } from '../src/data/excel.js';
-import { QueryEngine } from '../src/qa/query.js';
-import { NLU } from '../src/qa/nlu.js';
-import { makeEnv } from './helpers.js';
+import { createExcelIO } from '../src/data/excel.js';
+import { makeEnv, makeNQ, profile } from './helpers.js';
+
+const ExcelIO = createExcelIO(profile.schema);
+const { nlu: NLU, query: QueryEngine } = makeNQ();
 
 test('Validator：清洗后金额一致性零违规', () => {
-  const { clean } = Validator.run(makeEnv().raw);
+  const { clean } = Validator.run(makeEnv().raw, profile.rules);
   assert.equal(clean.filter(r=>Math.abs(r.amount-r.price*r.qty)>0.01).length, 0);
 });
 
