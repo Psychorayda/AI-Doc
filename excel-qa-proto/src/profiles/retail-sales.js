@@ -5,6 +5,9 @@ import { Rules } from '../data/validator.js';
 
 const DIM_FIELDS = ['store','category'];
 
+const STORES = ['华东旗舰店','华北中心店','华南天河店','西南锦江店'];
+const CATS = [['现制饮品',12,28],['烘焙点心',8,38],['轻食简餐',25,58],['周边零售',49,129]];
+
 export const RANGE = { price:[0.01,1000], qty:[1,500], amount:[0.01,1e7] };
 
 export const profile = defineProfile({
@@ -143,9 +146,16 @@ export const profile = defineProfile({
   mock: {
     rowCount: 220,
     dateRange: { from:[2025,5,1], to:[2026,7,18] },   // 2025-06-01 ~ 2026-08-18
-    stores: ['华东旗舰店','华北中心店','华南天河店','西南锦江店'],
-    cats: [['现制饮品',12,28],['烘焙点心',8,38],['轻食简餐',25,58],['周边零售',49,129]],
-    /* 注入错误（覆盖各类校验规则）：patch 覆盖正常行；amountFix 为不一致倍数 */
+    /* 行生成器（标准字段）：门店/品类随机，单价随品类，金额=单价×数量 */
+    row: () => {
+      const pick = a => a[Math.floor(Math.random()*a.length)];
+      const rnd = (a,b) => a+Math.random()*(b-a);
+      const [cat,pmin,pmax] = pick(CATS);
+      const price = Math.round(rnd(pmin,pmax)*2)/2;
+      const qty = Math.round(rnd(1,18));
+      return { store:pick(STORES), category:cat, price, qty, amount:Math.round(price*qty*100)/100 };
+    },
+    /* 注入错误（覆盖各类校验规则）：patch 覆盖正常行；fixOn 为 [字段,倍数] 注入不一致 */
     bad: [
       {patch:{store:''}},                 // 门店空值 → 剔除
       {patch:{qty:''}},                   // 数量空值 → 剔除
@@ -160,7 +170,7 @@ export const profile = defineProfile({
       {patch:{price:'45.0'}},             // 数值转文字 → 修复
       {patch:{qty:'十五'}},               // 中文数字 → 修复
       {patch:{date:'2026/7/15'}},         // 日期格式 → 修复
-      {patch:{}, amountFix:3.7},          // 销售额≠单价×数量 → 重算修复
+      {patch:{}, fixOn:['amount',3.7]},   // 销售额≠单价×数量 → 重算修复
     ],
   },
 });

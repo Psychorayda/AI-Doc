@@ -29,12 +29,12 @@ export function createQueryEngine(lex){
       const cur = mart.month[m];
       const cmp = (mart.monthCmp[m]||{})[spec.compare];
       const refM = spec.compare==='mom' ? Mart.prevMonth(m) : Mart.prevYear(m);
-      const field = spec.metric==='qty' ? 'qty' : 'amount';
-      return { type:'compare', compare:spec.compare, metric:spec.metric, month:m, refMonth:refM,
+      const field = spec.metric || lex.metrics[0];
+      return { type:'compare', compare:spec.compare, metric:field, month:m, refMonth:refM,
         cur: cur ? cur[field] : null,
-        ref: cmp ? (field==='qty' ? mart.month[refM].qty : mart.month[refM].amount) : null,
-        delta: cmp ? (field==='qty' ? cmp.qtyDelta : cmp.amountDelta) : null,
-        pct: cmp ? (field==='qty' ? cmp.qtyPct : cmp.amountPct) : null,
+        ref: cmp && mart.month[refM] ? mart.month[refM][field] : null,
+        delta: cmp ? cmp[field+'Delta'] : null,
+        pct: cmp ? cmp[field+'Pct'] : null,
         matched: cur ? cur.count : 0 };
     }
     let r = rows.slice();

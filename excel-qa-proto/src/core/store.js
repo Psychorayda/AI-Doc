@@ -10,5 +10,5 @@ export const Store = {
   tblState: { sortKey:null, sortDir:1, filters:{} },  // 表头排序/筛选状态（filters 按画像列 key）
   arbCount: 0,        // 双通道仲裁计数
   chat: [],           // 多轮记忆 {role, content}
-  enumCache: null,    // 供 LLM 抽参的枚举值（门店/品类/月份）
+  enumCache: null,    // 供 LLM 抽参的枚举值（画像 dims 两维 + 月份）
 };

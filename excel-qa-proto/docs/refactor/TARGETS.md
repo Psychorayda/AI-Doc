@@ -35,6 +35,7 @@
 - [x] 画像注册表 `src/profiles/index.js`：新增主题 = 放文件 + 登记一行；main.js 按 `?theme=<id>` 选择
 - [x] boot 函数化：`boot({profile, cases})` 装配可重入，主题切换走 URL 参数
 - [x] Mart 参数化：`build(rows, cfg)` 度量集/维度集由画像驱动（nlu.metrics/nlu.dims + 可选 mart.avgOf）；`storeMonth`→`dimMonth`，环比键泛化为 `<m>Delta/<m>Pct`；QueryEngine 随之去 amount/qty 硬编码
+- [x] Mock 参数化：`createMock(spec)` 行生成器 `spec.row()` 由画像提供，错误注入泛化为 patch + fixOn:[field,mul]；stores/cats 移入画像模块常量
 
 ## 成功度量（基线 → 现状）
 - 复制 token 数：25（1 簇）→ **0（0 簇）**（jscpd min-tokens 20）
