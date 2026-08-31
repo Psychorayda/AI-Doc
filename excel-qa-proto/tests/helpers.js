@@ -13,7 +13,7 @@ export { profile, retailCases };
 export function makeEnv(p = profile){
   const raw = createMock(p.mock).generate();
   const { clean, issues } = Validator.run(raw, p.rules);
-  const mart = Mart.build(clean);
+  const mart = Mart.build(clean, Mart.cfgOf(p));
   const enums = {
     stores: [...new Set(clean.map(r=>r[p.dims.stores.field]))],
     cats:   [...new Set(clean.map(r=>r[p.dims.cats.field]))],

@@ -77,7 +77,7 @@ test('第二画像：Validator 按自定义规则集清洗（剔除/填充/重�
 test('第二画像：NLU 按自定义词表解析 + QueryEngine 按自定义标签渲染', () => {
   const nlu = createNLU(lex), query = createQueryEngine(lex);
   const enums = { stores:['一号档口','二号档口'], cats:['面条','米饭'], months:['2026-08'] };
-  const mart = Mart.build(rows);
+  const mart = Mart.build(rows, { metrics: lex.metrics, dims: lex.dims });
 
   let spec = nlu.sanitizeSpec(nlu.ruleParse('各摊位营业额对比', enums), enums);
   assert.equal(spec.groupBy, 'store');
@@ -98,6 +98,20 @@ test('第二画像：NLU 按自定义词表解析 + QueryEngine 按自定义标�
     nlu.sanitizeSpec(nlu.ruleParse('各摊位营业额对比', enums), enums), res, mart);
   assert.match(grpText, /按摊位统计的总营业额/);
   assert.match(grpText, /一号档口：2,640 元/);
+});
+
+test('Mart：度量集/维度集参数化（非 amount/qty 主题）', () => {
+  const m = Mart.build([
+    { id:1, date:'2026-07-01', region:'北区', hours:8 },
+    { id:2, date:'2026-08-01', region:'南区', hours:6 },
+    { id:3, date:'2026-08-02', region:'北区', hours:10 },
+  ], { metrics:['hours'], dims:['region'] });
+  assert.equal(m.total.hours, 24);
+  assert.ok(!('amount' in m.total));
+  assert.equal(m.month['2026-08'].hours, 16);
+  assert.equal(m.region['北区'].count, 2);
+  assert.equal(m.monthCmp['2026-08'].mom.hoursDelta, 8);
+  assert.equal(m.rank.region[0].key, '北区');
 });
 
 test('第二画像：表格视图按自定义列定义渲染（标签/格式化/筛选）', () => {

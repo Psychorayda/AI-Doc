@@ -48,9 +48,8 @@ export function createQueryEngine(lex){
     /* 占比：子集 ÷ 时间范围总体（时间过滤外的其余过滤构成子集） */
     if(spec.ratio){
       const timeRows = rows.filter(x=>(!f.month||x.date.startsWith(f.month))&&(!f.year||x.date.startsWith(f.year))&&(!f.quarter||Mart.qOf(x.date.slice(0,7))===f.quarter));
-      const fld = metric==='qty'?'qty':'amount';
-      const part = r.reduce((a,x)=>a+(fld==='qty'?x.qty:x.amount),0);
-      const whole = timeRows.reduce((a,x)=>a+(fld==='qty'?x.qty:x.amount),0);
+      const part = r.reduce((a,x)=>a+(+x[metric]||0),0);
+      const whole = timeRows.reduce((a,x)=>a+(+x[metric]||0),0);
       return { type:'ratio', metric, part:round(part), whole:round(whole),
         pct: whole? round(part/whole*100):0, matched:r.length, scopeN:timeRows.length,
         label: DIMS.map(d=>f[d]).find(Boolean)||'所选范围' };
@@ -104,11 +103,11 @@ export function createQueryEngine(lex){
       let base = res.agg==='count'
         ? `${scope}共有 ${res.value} 条记录${note?'（'+note+'）':''}。`
         : `${scope}的${aName}${mName}为 ${res.value.toLocaleString()}${unitOf(res.metric)}（基于 ${res.matched} 条记录${note?'，'+note:''}）。`;
-      /* 月度标量查询附赠 Mart 预计算的环比信息 */
+      /* 月度标量查询附赠 Mart 预计算的环比信息（按当前度量取 <m>Delta/<m>Pct） */
       if(res.month && mart && mart.monthCmp[res.month] && mart.monthCmp[res.month].mom){
         const c = mart.monthCmp[res.month].mom;
-        if(res.metric==='amount' && c.amountPct!=null) base += `（环比 ${mart.monthCmp[res.month].refMom}：${c.amountDelta>=0?'+':''}${c.amountDelta.toLocaleString()} 元，${c.amountPct>=0?'+':''}${c.amountPct}%）`;
-        if(res.metric==='qty' && c.qtyPct!=null) base += `（环比 ${mart.monthCmp[res.month].refMom}：${c.qtyDelta>=0?'+':''}${c.qtyDelta} 件，${c.qtyPct>=0?'+':''}${c.qtyPct}%）`;
+        const d = c[res.metric+'Delta'], p = c[res.metric+'Pct'];
+        if(p!=null) base += `（环比 ${mart.monthCmp[res.month].refMom}：${d>=0?'+':''}${d.toLocaleString()}${unitOf(res.metric)}，${p>=0?'+':''}${p}%）`;
       }
       return base;
     }

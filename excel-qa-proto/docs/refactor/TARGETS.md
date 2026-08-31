@@ -30,13 +30,19 @@
 - [x] main.js 单点注入画像；enumCache 由 profile.dims 构建
 - [x] 第二画像验证 `tests/profile.test.js`（食堂档口主题：不同表头/别名/词表/标签/规则，核心零改动）
 - [x] 启动冒烟 `tests/boot.test.js`（DOM stub 下 main.js 装配 + 文案注入）
+- [x] UI 表格层画像化：`createTable(cols)` 工厂，列定义/排序/筛选/格式化走 `profile.table.cols`；tblState 筛选按字段 key 泛化
+- [x] 规则文案去领域词：`Rules.productConsistency` 增加 label 参数，默认值无领域词
+- [x] 画像注册表 `src/profiles/index.js`：新增主题 = 放文件 + 登记一行；main.js 按 `?theme=<id>` 选择
+- [x] boot 函数化：`boot({profile, cases})` 装配可重入，主题切换走 URL 参数
+- [x] Mart 参数化：`build(rows, cfg)` 度量集/维度集由画像驱动（nlu.metrics/nlu.dims + 可选 mart.avgOf）；`storeMonth`→`dimMonth`，环比键泛化为 `<m>Delta/<m>Pct`；QueryEngine 随之去 amount/qty 硬编码
 
 ## 成功度量（基线 → 现状）
 - 复制 token 数：25（1 簇）→ **0（0 簇）**（jscpd min-tokens 20）
 - 循环依赖环数：0 → 0
 - 核心模块（src/core、src/data、src/qa、src/ui）领域词（门店/品类/销售额/销量/单价/现制/烘焙等）：**0 残留**（grep 验证，仅余注释中的范式说明）
-- 测试：13/13 → **18/18 pass**（+4 第二画像、+1 启动冒烟）
+- 测试：13/13 → **19/19 pass**（+5 第二画像/Mart 参数化、+1 启动冒烟）
 
-## 已知边界（v1）
-- spec 结构（metric/groupBy/filters/compare/ratio）与 Mart 预计算结构（amount/qty 聚合、月/季/年桶）属核心层，画像不替换；`date` 为时间维固定字段。
-- UI 展示层已画像化：table.js 列定义走 `profile.table.cols`；settings.js / issues.js 为通用界面，无领域词。
+## 已知边界（v2）
+- spec 结构（metric/groupBy/filters/compare/ratio）与月/季/年桶、环比同比语义属核心层；`date` 为时间维固定字段。
+- 度量集/维度集已参数化：画像 `nlu.metrics` / `nlu.dims` 驱动 Mart 与 QueryEngine，支持非金额主题（如 hours）。
+- 主题切换为 URL 参数级（`?theme=` 整页重载）；同页多实例并存需 Store 实例化，未做。

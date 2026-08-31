@@ -40,6 +40,9 @@ export const profile = defineProfile({
     cats:   { field:'category', label:'品类' },
   },
 
+  /* Mart 可选段：派生均值（均价 = 销售额 ÷ 数量） */
+  mart: { avgOf: ['amount','qty'], avgKey: 'priceAvg' },
+
   nlu: {
     metrics: ['amount','qty','price'],
     dims: DIM_FIELDS,

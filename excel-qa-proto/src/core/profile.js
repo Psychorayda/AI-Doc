@@ -12,6 +12,7 @@
  *     stores: { field, label },        // 对应 spec.filters.store / enums.stores
  *     cats:   { field, label }         // 对应 spec.filters.category / enums.cats
  *   },
+ *   mart?: { avgOf: [a,b], avgKey },   // 可选：Mart 派生均值（如 均价=销售额÷数量）
  *   nlu: {                             // createNLU / createQueryEngine 消费
  *     metrics:  ['amount','qty','price'],      // spec.metric 白名单（首项为默认指标）
  *     dims:     ['store','category'],          // spec.groupBy / filters 维度字段白名单
@@ -42,8 +43,8 @@
  *   mock: { rowCount, dateRange:{from,to}, stores[], cats:[[名,价min,价max]], bad[] }  // createMock 消费
  * }
  *
- * 当前边界（v1）：spec 结构（metric/groupBy/filters/compare/ratio）与 Mart 预计算结构
- * （amount/qty 聚合、月/季/年桶）属核心层，画像不替换；date 字段为时间维固定字段。
+ * 当前边界（v2）：spec 结构（metric/groupBy/filters/compare/ratio）与月度桶/环比同比语义属核心层；
+ * 度量集与维度集已由画像驱动（nlu.metrics / nlu.dims → Mart/QueryEngine），date 为时间维固定字段。
  */
 
 /* 校验画像最小完整性，缺关键段时尽早报错（启动期 fail-fast） */
