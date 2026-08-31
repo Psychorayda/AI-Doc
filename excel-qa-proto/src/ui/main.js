@@ -13,7 +13,7 @@ import { createQueryEngine } from '../qa/query.js';
 import { createChat } from '../qa/chat.js';
 import { createEvalRunner } from '../qa/eval.js';
 import { $ } from './dom.js';
-import { renderRawTable, renderTable, bindTableEvents } from './table.js';
+import { createTable } from './table.js';
 import { renderStats, renderIssues, setArb, bindIssueFilter, resetIssueView } from './issues.js';
 import { addMsg, addThinking, clearChat } from './chatview.js';
 import { toast, showAlert, refreshChip, bindSettings } from './settings.js';
@@ -25,6 +25,7 @@ const query = createQueryEngine(profile.nlu);
 const llm = createLLMClient();
 const chat = createChat({ store: Store, llm, view: { addMsg, addThinking, setArb }, nlu, query });
 const evalRunner = createEvalRunner({ store: Store, llm, nlu, query, cases: retailCases });
+const table = createTable(profile.table.cols);
 
 /* ---- UI 文案注入：品牌 / 表头提示 / 问数示例 / 欢迎语（单源：profile.copy） ---- */
 function applyCopy(){
@@ -53,10 +54,10 @@ function loadRaw(raw, sourceName){
   Store.issueFilter = 'all';
   Store.view = 'raw';
   Store.arbCount = 0;
-  Store.tblState = { sortKey:null, sortDir:1, fStore:null, fCat:null };
+  Store.tblState = { sortKey:null, sortDir:1, filters:{} };
   Store.pending = Validator.run(raw, profile.rules);   // 预跑规则，仅用于原始表标注，不转正
   resetIssueView();
-  renderRawTable();
+  table.renderRawTable();
   $('btnValidate').disabled = false;
   $('btnEval').disabled = true;
   $('btnEvalLLM').disabled = true;
@@ -77,7 +78,7 @@ function runValidation(){
   };
   Store.mart = Mart.build(clean);   // 预计算标准化结构：月/季/年聚合、维度排行、环比同比
   Store.view = 'clean';
-  renderStats(); renderIssues(); renderTable();
+  renderStats(); renderIssues(); table.renderTable();
   $('btnValidate').disabled = true;
   $('btnEval').disabled = false;
   $('btnEvalLLM').disabled = !llm.ready();
@@ -126,7 +127,7 @@ function bind(){
     }
   };
 
-  bindTableEvents();
+  table.bindTableEvents();
   bindIssueFilter();
 
   document.querySelectorAll('.hint').forEach(b=>b.onclick = ()=>{ $('q').value=b.textContent; chat.ask(b.textContent); });

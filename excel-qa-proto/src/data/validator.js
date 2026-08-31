@@ -64,13 +64,13 @@ export const Rules = {
       }
     }};
   },
-  /* 一致性：target = a × b（已剔除行跳过；偏差>0.01 重算修复） */
-  productConsistency(target, a, b){
+  /* 一致性：target = a × b（已剔除行跳过；偏差>0.01 重算修复）；label 为画像提供的文案，如 '销售额≠单价×数量' */
+  productConsistency(target, a, b, label){
     return { id:`consistency:${target}=${a}*${b}`, apply(ctx){
       if(ctx.dropped) return;
       const expect = Math.round(ctx.out[a]*ctx.out[b]*100)/100;
       if(ctx.out[target]==null || Math.abs(ctx.out[target]-expect)>0.01){
-        ctx.issues.push({rowId:ctx.row.id, field:target, rule:'销售额≠单价×数量，已重算', before:ctx.out[target]??'(空)', after:expect, action:'fixed'});
+        ctx.issues.push({rowId:ctx.row.id, field:target, rule:`${label||`${target}≠${a}×${b}`}，已重算`, before:ctx.out[target]??'(空)', after:expect, action:'fixed'});
         ctx.out[target] = expect;
       }
     }};

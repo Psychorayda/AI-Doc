@@ -32,7 +32,7 @@ export const profile = defineProfile({
     Rules.numeric('price',  { range: RANGE.price }),
     Rules.numeric('qty',    { range: RANGE.qty }),
     Rules.numeric('amount', { range: RANGE.amount, nullable: true }),
-    Rules.productConsistency('amount', 'price', 'qty'),
+    Rules.productConsistency('amount', 'price', 'qty', '销售额≠单价×数量'),
   ],
 
   dims: {
@@ -109,6 +109,17 @@ export const profile = defineProfile({
       ],
       footer: '也可以直接点击下方问数方向提示。',
     },
+  },
+
+  table: {
+    cols: [
+      { key:'date',     label:'日期',       num:true, sortable:true },
+      { key:'store',    label:'门店',       filter:true },
+      { key:'category', label:'品类',       filter:true },
+      { key:'price',    label:'单价(元)',   num:true, sortable:true, fmt:v=>v.toFixed(1) },
+      { key:'qty',      label:'数量(件)',   num:true, sortable:true },
+      { key:'amount',   label:'销售额(元)', num:true, sortable:true, fmt:v=>v.toLocaleString() },
+    ],
   },
 
   copy: {

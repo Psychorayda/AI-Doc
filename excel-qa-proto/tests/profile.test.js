@@ -7,6 +7,8 @@ import { Validator, Rules } from '../src/data/validator.js';
 import { Mart } from '../src/data/mart.js';
 import { createNLU } from '../src/qa/nlu.js';
 import { createQueryEngine } from '../src/qa/query.js';
+import { createTable } from '../src/ui/table.js';
+import { Store } from '../src/core/store.js';
 
 const schema = {
   required: [['日期','date'],['摊位','store'],['菜品','category'],['单价','price'],['份数','qty'],['营业额','amount']],
@@ -96,4 +98,37 @@ test('第二画像：NLU 按自定义词表解析 + QueryEngine 按自定义标�
     nlu.sanitizeSpec(nlu.ruleParse('各摊位营业额对比', enums), enums), res, mart);
   assert.match(grpText, /按摊位统计的总营业额/);
   assert.match(grpText, /一号档口：2,640 元/);
+});
+
+test('第二画像：表格视图按自定义列定义渲染（标签/格式化/筛选）', () => {
+  const table = createTable([
+    { key:'date',  label:'日期',       num:true, sortable:true },
+    { key:'store', label:'摊位',       filter:true },
+    { key:'category', label:'菜品',    filter:true },
+    { key:'qty',   label:'份数',       num:true, sortable:true },
+    { key:'amount', label:'营业额(元)', num:true, sortable:true, fmt:v=>v.toLocaleString() },
+  ]);
+  const els = {};
+  globalThis.document = {
+    getElementById: id => els[id] ?? (els[id]={ innerHTML:'', textContent:'', style:{} }),
+    addEventListener(){},
+  };
+  Store.rawRows = rows; Store.cleanRows = []; Store.pending = { issues: [] };
+  Store.tblState = { sortKey:null, sortDir:1, filters:{} }; Store.view = 'raw';
+
+  table.renderRawTable();
+  assert.match(els['tableWrap'].innerHTML, /摊位/);
+  assert.match(els['tableWrap'].innerHTML, /菜品/);
+  assert.doesNotMatch(els['tableWrap'].innerHTML, /门店|品类|销售额/);
+
+  Store.cleanRows = rows; Store.view = 'clean';
+  table.renderTable();
+  assert.match(els['tableWrap'].innerHTML, /营业额/);
+  assert.match(els['tableWrap'].innerHTML, /1,200/);   // fmt 生效
+
+  Store.tblState.filters = { store: new Set(['二号档口']) };
+  table.renderTable();
+  assert.ok(els['tableWrap'].innerHTML.includes('二号档口'));
+  assert.ok(!els['tableWrap'].innerHTML.includes('一号档口'));
+  Store.cleanRows = []; Store.rawRows = []; Store.view = 'none';
 });

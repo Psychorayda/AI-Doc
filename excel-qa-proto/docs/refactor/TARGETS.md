@@ -34,9 +34,9 @@
 ## 成功度量（基线 → 现状）
 - 复制 token 数：25（1 簇）→ **0（0 簇）**（jscpd min-tokens 20）
 - 循环依赖环数：0 → 0
-- 核心模块（src/core、src/data、src/qa）领域词（门店/品类/销售额/销量/单价/现制/烘焙等）：**0 残留**（grep 验证）
-- 测试：13/13 → **17/17 pass**（+3 第二画像、+1 启动冒烟）
+- 核心模块（src/core、src/data、src/qa、src/ui）领域词（门店/品类/销售额/销量/单价/现制/烘焙等）：**0 残留**（grep 验证，仅余注释中的范式说明）
+- 测试：13/13 → **18/18 pass**（+4 第二画像、+1 启动冒烟）
 
 ## 已知边界（v1）
 - spec 结构（metric/groupBy/filters/compare/ratio）与 Mart 预计算结构（amount/qty 聚合、月/季/年桶）属核心层，画像不替换；`date` 为时间维固定字段。
-- UI 展示层（table.js 列定义、settings.js、issues.js）仍含展示文案，未画像化（不影响数据/问数链路换主题）。
+- UI 展示层已画像化：table.js 列定义走 `profile.table.cols`；settings.js / issues.js 为通用界面，无领域词。

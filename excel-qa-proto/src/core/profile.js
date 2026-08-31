@@ -32,6 +32,13 @@
  *     vague:  { examples[], footer }            // 模糊问数回复模板
  *   },
  *   copy: { title, brand, subtitle, headerHint, greeting, hints[] },  // UI 文案（main.js 注入 index.html）
+ *   table: {                           // 表格视图列定义（createTable 消费，ui/table.js）
+ *     cols: [{ key, label,             // 字段名 + 表头/筛选弹层中文标签
+ *              num?:bool,              // 数值列（右对齐样式）
+ *              sortable?:bool,         // 表头可排序
+ *              filter?:bool,           // 表头漏斗筛选（tblState.filters[key]）
+ *              fmt?:(v)=>string }],    // 清洗后表的单元格格式化（原始表始终显示原值）
+ *   },
  *   mock: { rowCount, dateRange:{from,to}, stores[], cats:[[名,价min,价max]], bad[] }  // createMock 消费
  * }
  *
@@ -41,7 +48,7 @@
 
 /* 校验画像最小完整性，缺关键段时尽早报错（启动期 fail-fast） */
 export function defineProfile(p){
-  for(const k of ['id','schema','rules','dims','nlu','copy','mock'])
+  for(const k of ['id','schema','rules','dims','nlu','copy','table','mock'])
     if(!p[k]) throw new Error(`Profile 缺少字段：${k}`);
   return p;
 }
