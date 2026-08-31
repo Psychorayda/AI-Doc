@@ -1,10 +1,15 @@
-/* main —— 装配入口：实例化模块、绑定事件、数据装载流程 */
+/* main —— 装配入口：注入画像、实例化模块、绑定事件、数据装载流程
+ * 换主题只需改下一行 import 的画像文件 */
+import { profile } from '../profiles/retail-sales.js';
+import { retailCases } from '../profiles/retail-cases.js';
 import { Store } from '../core/store.js';
-import { MockData } from '../data/mock.js';
-import { ExcelIO } from '../data/excel.js';
+import { createMock } from '../data/mock.js';
+import { createExcelIO } from '../data/excel.js';
 import { Validator } from '../data/validator.js';
 import { Mart } from '../data/mart.js';
 import { createLLMClient } from '../qa/llm.js';
+import { createNLU } from '../qa/nlu.js';
+import { createQueryEngine } from '../qa/query.js';
 import { createChat } from '../qa/chat.js';
 import { createEvalRunner } from '../qa/eval.js';
 import { $ } from './dom.js';
@@ -13,9 +18,24 @@ import { renderStats, renderIssues, setArb, bindIssueFilter, resetIssueView } fr
 import { addMsg, addThinking, clearChat } from './chatview.js';
 import { toast, showAlert, refreshChip, bindSettings } from './settings.js';
 
+const MockData = createMock(profile.mock);
+const ExcelIO = createExcelIO(profile.schema);
+const nlu = createNLU(profile.nlu);
+const query = createQueryEngine(profile.nlu);
 const llm = createLLMClient();
-const chat = createChat({ store: Store, llm, view: { addMsg, addThinking, setArb } });
-const evalRunner = createEvalRunner({ store: Store, llm });
+const chat = createChat({ store: Store, llm, view: { addMsg, addThinking, setArb }, nlu, query });
+const evalRunner = createEvalRunner({ store: Store, llm, nlu, query, cases: retailCases });
+
+/* ---- UI 文案注入：品牌 / 表头提示 / 问数示例 / 欢迎语（单源：profile.copy） ---- */
+function applyCopy(){
+  const c = profile.copy;
+  document.title = c.title;
+  $('brand').textContent = c.brand;
+  $('brandSub').textContent = c.subtitle;
+  $('dropHint').textContent = c.headerHint;
+  $('hintDir').innerHTML = c.hints.map(h=>`<button class="hint">${h}</button>`).join('');
+  clearChat(c.greeting);
+}
 
 /* ---- 数据装载：两段式（载入原始数据 → 用户确认后校验修复） ---- */
 function resetChat(greeting){
@@ -34,7 +54,7 @@ function loadRaw(raw, sourceName){
   Store.view = 'raw';
   Store.arbCount = 0;
   Store.tblState = { sortKey:null, sortDir:1, fStore:null, fCat:null };
-  Store.pending = Validator.run(raw);   // 预跑规则，仅用于原始表标注，不转正
+  Store.pending = Validator.run(raw, profile.rules);   // 预跑规则，仅用于原始表标注，不转正
   resetIssueView();
   renderRawTable();
   $('btnValidate').disabled = false;
@@ -46,13 +66,13 @@ function loadRaw(raw, sourceName){
 
 function runValidation(){
   if(!Store.rawRows.length) return;
-  const { clean, issues } = Store.pending || Validator.run(Store.rawRows);
+  const { clean, issues } = Store.pending || Validator.run(Store.rawRows, profile.rules);
   Store.pending = null;
   Store.cleanRows = clean;
   Store.issues = issues;
   Store.enumCache = {
-    stores: [...new Set(clean.map(r=>r.store))],
-    cats:   [...new Set(clean.map(r=>r.category))],
+    stores: [...new Set(clean.map(r=>r[profile.dims.stores.field]))],
+    cats:   [...new Set(clean.map(r=>r[profile.dims.cats.field]))],
     months: [...new Set(clean.map(r=>r.date.slice(0,7)))].sort()
   };
   Store.mart = Mart.build(clean);   // 预计算标准化结构：月/季/年聚合、维度排行、环比同比
@@ -119,5 +139,6 @@ function bind(){
   refreshChip(llm);
 }
 
+applyCopy();
 bind();
 window.__BOOTED = true;   // 启动看护标志：index.html 内联脚本据此判断模块图是否成功执行

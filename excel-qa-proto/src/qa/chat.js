@@ -1,9 +1,7 @@
 /* Chat —— 多轮对话编排：双通道抽参 → 仲裁 → 本地查询 → 组织回答（全程有反馈）
- * 依赖注入：store / llm / view（addMsg/addThinking/setArb），Node 可 headless 测仲裁 */
-import { NLU } from './nlu.js';
-import { QueryEngine } from './query.js';
+ * 依赖注入：store / llm / view（addMsg/addThinking/setArb）/ nlu / query，Node 可 headless 测仲裁 */
 
-export function createChat({ store, llm, view }){
+export function createChat({ store, llm, view, nlu, query }){
   let lastUserQ = null;
   let lastSpec = null;   // 上一轮最终执行的 spec，供规则通道追问继承
 
@@ -22,35 +20,35 @@ export function createChat({ store, llm, view }){
     const enums = store.enumCache;
 
     /* ① 双通道抽参：规则（本地零成本，含追问上下文合并）与 LLM 并行，消毒+月份消歧后结构比对 */
-    const ruleSpec = NLU.resolveMonth(NLU.mergeContext(NLU.sanitizeSpec(NLU.ruleParse(q, enums), enums), lastSpec, q), enums, q);
+    const ruleSpec = nlu.resolveMonth(nlu.mergeContext(nlu.sanitizeSpec(nlu.ruleParse(q, enums), enums), lastSpec, q), enums, q);
     /* 模糊问数：直接回预设模板（零成本、不猜 spec） */
-    if(NLU.isVague(q, ruleSpec)){
+    if(nlu.isVague(q, ruleSpec)){
       thinking.remove();
-      view.addMsg('ai', NLU.vagueReply(enums), false, '预设模板 · 0ms');
+      view.addMsg('ai', nlu.vagueReply(enums), false, '预设模板 · 0ms');
       lastUserQ = q;
       return;
     }
     let llmSpec = null;
     if(llm.ready()){
       try{
-        const msgs = NLU.buildExtractPrompt(q, lastUserQ, enums);
+        const msgs = nlu.buildExtractPrompt(q, lastUserQ, enums);
         const raw = await llm.chat(msgs, {maxTokens:280, jsonMode:true});
         try{
-          llmSpec = NLU.parseSpecJSON(raw);
+          llmSpec = nlu.parseSpecJSON(raw);
         }catch(e){
           const fixed = await llm.chat([...msgs,
             { role:'assistant', content:raw },
             { role:'user', content:'上面的输出不是合法 JSON，请修正后只输出 JSON，不要任何解释。' }
           ], {maxTokens:280, jsonMode:true});
-          llmSpec = NLU.parseSpecJSON(fixed);
+          llmSpec = nlu.parseSpecJSON(fixed);
         }
-        llmSpec = NLU.resolveMonth(NLU.sanitizeSpec(llmSpec, enums), enums, q);
+        llmSpec = nlu.resolveMonth(nlu.sanitizeSpec(llmSpec, enums), enums, q);
       }catch(e){ llmSpec = null; }
     }
 
     /* ② 仲裁与查询：一致直接执行；不一致则 LLM 优先、0 命中时回退规则（不打扰用户） */
     let spec, res, engine;
-    const runQ = s => QueryEngine.run(s, store.cleanRows, store.mart);
+    const runQ = s => query.run(s, store.cleanRows, store.mart);
     try{
       if(llmSpec){
         if(JSON.stringify(llmSpec)===JSON.stringify(ruleSpec)){ spec=llmSpec; res=runQ(spec); engine='双通道一致'; }
@@ -83,9 +81,9 @@ export function createChat({ store, llm, view }){
           ...mem,
           { role:'user', content:`问题：${q}\n查询结果(JSON)：${brief}` }
         ], {maxTokens:220});
-      }catch(e){ engine='本地模板'; answer = QueryEngine.renderLocal(spec, res, store.mart); }
+      }catch(e){ engine='本地模板'; answer = query.renderLocal(spec, res, store.mart); }
     } else {
-      answer = QueryEngine.renderLocal(spec, res, store.mart);
+      answer = query.renderLocal(spec, res, store.mart);
     }
     /* ③.5 二次校验（同模型分步自检；可在设置中开关） */
     if(llmSpec && engine!=='本地模板' && llm.cfg().verify){
@@ -96,7 +94,7 @@ export function createChat({ store, llm, view }){
         ], {maxTokens:80});
         if(!/^PASS/i.test(verdict.trim())){
           engine = '大模型(校验未通过→模板)';
-          answer = QueryEngine.renderLocal(spec, res, store.mart);
+          answer = query.renderLocal(spec, res, store.mart);
         }
       }catch(e){ /* 校验调用失败不阻断主流程，沿用原回答 */ }
     }

@@ -1,7 +1,8 @@
 /* Mart —— 修复后数据的预计算层（标准化结构，供问数直接命中）
  * 预计算：月/季/年 × 全局 的合计/均值/计数；门店/品类维度排行；
  *        门店×月交叉；月度环比/同比增量与增幅 */
-const round = v => Math.round(v*100)/100;
+import { round } from '../core/num.js';
+
 const qOf = m => `${m.slice(0,4)}-Q${Math.ceil(+m.slice(5,7)/3)}`;
 const prevMonth = m => { let [y,mo]=m.split('-').map(Number); mo--; if(mo<1){mo=12;y--;} return `${y}-${String(mo).padStart(2,'0')}`; };
 const prevYear  = m => `${+m.slice(0,4)-1}${m.slice(4)}`;

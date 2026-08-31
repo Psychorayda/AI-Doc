@@ -1,5 +1,4 @@
-/* 全局状态单例 + 极简事件（UI 订阅渲染；字段保持直接读写以维持既有行为） */
-const listeners = {};
+/* 全局状态单例（字段直接读写以维持既有行为） */
 export const Store = {
   rawRows: [],        // 原始行
   cleanRows: [],      // 修复后行（问数只查这里）
@@ -12,6 +11,4 @@ export const Store = {
   arbCount: 0,        // 双通道仲裁计数
   chat: [],           // 多轮记忆 {role, content}
   enumCache: null,    // 供 LLM 抽参的枚举值（门店/品类/月份）
-  on(evt, fn){ (listeners[evt]=listeners[evt]||[]).push(fn); },
-  emit(evt, payload){ (listeners[evt]||[]).forEach(fn=>fn(payload)); }
 };
