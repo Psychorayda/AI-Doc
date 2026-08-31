@@ -26,11 +26,12 @@ export function cleanNumber(v, field, rowId, issues){
 
 /* —— 规则工厂 —— */
 export const Rules = {
-  /* 日期格式归一：yyyy/m/d、yyyy.m.d → yyyy-mm-dd；无法解析则剔除 */
+  /* 日期格式归一：yyyy/m/d、yyyy.m.d、yyyymmdd → yyyy-mm-dd；无法解析则剔除 */
   dateNorm(field){
     return { id:`dateNorm:${field}`, apply(ctx){
       let d = String(ctx.row[field]??'').trim().replace(/[/.]/g,'-');
-      const m = d.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      let m = d.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if(!m && /^\d{8}$/.test(d)) m = [d, d.slice(0,4), d.slice(4,6), d.slice(6,8)];
       if(m){ const nd=`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
         if(nd!==d) ctx.issues.push({rowId:ctx.row.id, field, rule:'日期格式归一', before:ctx.row[field], after:nd, action:'fixed'});
         ctx.out[field]=nd;
@@ -75,11 +76,51 @@ export const Rules = {
       }
     }};
   },
+  /* 字符规范化：全角→半角（字母/数字/符号）+ 全角空格、去首尾空格；lower 时统一小写（许可证号等标识键） */
+  textNorm(field, { lower=false }={}){
+    return { id:`textNorm:${field}`, apply(ctx){
+      const s = String(ctx.row[field]??'');
+      let t = s.replace(/[！-～]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/　/g,' ').trim();
+      if(lower) t = t.toLowerCase();
+      if(t!==s) ctx.issues.push({rowId:ctx.row.id, field, rule:'字符规范化（全角/空格/大小写）', before:s||'(空)', after:t, action:'fixed'});
+      ctx.out[field] = t;
+    }};
+  },
+  /* 缺失值推导：target 缺失或非正且 a、b 均有效时，target = a÷b（如 单价=销售金额÷数量），推导保留不剔除 */
+  deriveDiv(target, a, b){
+    return { id:`derive:${target}=${a}/${b}`, apply(ctx){
+      if(ctx.dropped) return;
+      const t = ctx.out[target], x = ctx.out[a], y = ctx.out[b];
+      if((t==null || t<=0) && x>0 && y>0){
+        const v = Math.round(x/y*100)/100;
+        ctx.issues.push({rowId:ctx.row.id, field:target, rule:`缺失推导 ${target}=${a}÷${b}`, before:t??'(空)', after:v, action:'fixed'});
+        ctx.out[target] = v;
+      }
+    }};
+  },
+  /* 正数门禁：经推导后仍为 null 或 <=0 的关键数值字段 → 剔除（无法参与计算的行） */
+  positiveNum(field){
+    return { id:`positive:${field}`, apply(ctx){
+      const v = ctx.out[field];
+      if(v==null || v<=0){ ctx.issues.push({rowId:ctx.row.id, field, rule:'关键数值缺失或非正', before:v??'(空)', after:'—', action:'removed'}); ctx.drop(); }
+    }};
+  },
+  /* 完全重复去重：业务字段全同仅保留首条；状态经 reset() 由 Validator.run 每轮重置（保证重跑一致） */
+  dedupe(fields){
+    const seen = new Set();
+    return { id:`dedupe:${fields.join('+')}`, reset(){ seen.clear(); }, apply(ctx){
+      if(ctx.dropped) return;
+      const key = fields.map(f=>String(ctx.out[f]??'')).join('|');
+      if(seen.has(key)){ ctx.issues.push({rowId:ctx.row.id, field:fields[0], rule:'完全重复记录，仅保留首条', before:key, after:'—', action:'removed'}); ctx.drop(); }
+      else seen.add(key);
+    }};
+  },
 };
 
 /* 规则由画像（profiles/*.js）组合注入，本模块不含任何主题默认值 */
 function run(raw, rules){
   const issues=[], clean=[];
+  rules.forEach(r=>r.reset && r.reset());   // 有状态规则（如 dedupe）每轮重置，保证重跑一致
   raw.forEach(row=>{
     const ctx = { row, out:{ id:row.id }, issues, dropped:false, drop(){ this.dropped=true; } };
     for(const rule of rules) rule.apply(ctx);
